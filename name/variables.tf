@@ -1,6 +1,6 @@
 variable "resource_type" {
   type = string
-  description = "Resource type to be used while generating the name."
+  description = "Resource type to be used while generating the name. This will generally be the intent name."
 }
 
 variable "resource_name" {
