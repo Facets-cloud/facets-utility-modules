@@ -19,7 +19,7 @@ module "resource_name" {
   
   # Optional variables
   globally_unique = false
-  prefix        = "my-prefix-";
+  prefix        = "my-prefix-"
 }
 ```
 
