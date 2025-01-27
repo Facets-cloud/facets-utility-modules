@@ -15,8 +15,10 @@ module "resource_name" {
   resource_type = "example_resource"
   environment   = var.environment
   limit         = 25
-  is_k8s       = false;
-  globally_unique = false;
+  is_k8s       = false
+  
+  # Optional variables
+  globally_unique = false
   prefix        = "my-prefix-";
 }
 ```
