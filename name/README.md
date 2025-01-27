@@ -13,11 +13,7 @@ module "resource_name" {
   # Required variables
   resource_name = "my_resource"
   resource_type = "example_resource"
-  environment   = {
-    name        = "example-name"
-    cluster_code = "abc01"  # Any alphabetic code in lowercase
-    unique_name = "unique-name"
-  }
+  environment   = var.environment
   limit         = 25
   is_k8s       = false;
   globally_unique = false;
