@@ -8,7 +8,7 @@ To use this module, you can include it in your Terraform configuration as follow
 
 ```hcl
 module "resource_name" {
-  source = "./name"
+  source = "https://github.com/Facets-cloud/facets-utility-modules.git//name"
 
   # Required variables
   resource_name = "my_resource"
@@ -19,9 +19,9 @@ module "resource_name" {
     unique_name = "unique-name"
   }
   limit         = 25
-  is_k8s       = false
-  globally_unique = false
-  prefix        = "my-prefix-"
+  is_k8s       = false;
+  globally_unique = false;
+  prefix        = "my-prefix-";
 }
 ```
 
