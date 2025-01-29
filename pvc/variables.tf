@@ -28,16 +28,16 @@ variable "kind" {
 }
 
 variable "additional_labels" {
-  type = map(string)
+  type    = map(string)
   default = {}
 }
 
 variable "annotations" {
-  type = map(string)
+  type    = map(string)
   default = {}
 }
 
 variable "cloud_tags" {
-  type = any
+  type    = any
   default = {}
 }
