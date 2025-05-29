@@ -41,3 +41,9 @@ variable "cloud_tags" {
   type    = any
   default = {}
 }
+
+variable "storage_class_name" {
+  type = string
+  default = null
+  
+}
