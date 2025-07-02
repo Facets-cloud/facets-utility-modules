@@ -91,14 +91,13 @@ locals {
   sidecars        = lookup(var.values.spec, "sidecars", lookup(local.advanced_config_values, "sidecars", {}))
   init_containers = lookup(var.values.spec, "init_containers", lookup(local.advanced_config_values, "init_containers", {}))
 
-  # Exclusion list for env/secret values (dynamically sourced from input values)
+  # Exclusion list for env/secret values (value-based exclusion)
   exclude_env_and_secret_values = try(
     var.values.advanced.common.app_chart.values.exclude_env_and_secret_values,
     []
   )
 
-  # env_vars and all_secrets are sourced from input variables, not hardcoded
-  # Filtering is applied based on the exclusion list from input values
+  # Filter env_vars and all_secrets by value after merging all sources
   filtered_env_vars = {
     for k, v in local.env_vars :
     k => v
@@ -111,7 +110,7 @@ locals {
     if !(contains(local.exclude_env_and_secret_values, v))
   }
 
-  # Merge only filtered maps
+  # Merge all sources, but only include filtered env_vars and all_secrets
   env = merge(
     lookup(local.dep_cluster, "globalVariables", {}),
     local.filtered_env_vars,
