@@ -65,13 +65,7 @@ Inject env variables to the respecitve containers
 {{- $allowDots := default false .Values.advanced.common.app_chart.values.allow_dots_in_env -}}
 {{- $excludes := .Values.advanced.common.app_chart.values.exclude_env_and_secret_values | default (list) -}}
 {{- range $k, $v := .Values.spec.env }}
-{{- $skip := false -}}
-{{- range $excludes }}
-  {{- if eq . $v }}
-    {{- $skip = true }}
-  {{- end }}
-{{- end }}
-{{- if not $skip }}
+{{- if not (include "app-chart.inList" (list $v $excludes)) }}
   {{- if and (regexMatch "[.]" $k) (not $allowDots) }}
   {{- $K := $k | upper | replace "." "_" }}
 - name: {{ $K }}
@@ -793,6 +787,7 @@ Add sidecars to all the kubernetes objects that will inherit from the module cha
 {{- end }}
 {{- end }}
 {{- end }}
+{{- end }}
 {{- if and ( hasKey $v.runtime  "volumes") (gt (len $v.runtime.volumes) 0) }}
   volumeMounts:
 {{- if and ( hasKey $v.runtime.volumes  "config_maps") (gt (len $v.runtime.volumes.config_maps) 0) }}
@@ -1162,3 +1157,18 @@ Get the replicas from autoscaling or instance_count and default to 1 if not set
 {{- default 1 .Values.spec.runtime.instance_count }}
 {{- end }}
 {{- end }}
+
+{{/*
+Check if a value is in a list
+*/}}
+{{- define "app-chart.inList" -}}
+{{- $found := false -}}
+{{- $search := index . 0 -}}
+{{- $list := index . 1 -}}
+{{- range $item := $list }}
+  {{- if eq $item $search }}
+    {{- $found = true }}
+  {{- end }}
+{{- end }}
+{{- $found -}}
+{{- end -}}
