@@ -18,7 +18,6 @@ advanced:
         tolerations : {}
         pod_distribution: {}
         init_containers: {}
-        exclude_env_and_secret_values: []  # List of values to exclude from secrets and env. Example: [null, placeholder, default]
         # - name: qa-1
         #   image: busybox
         #   additional_k8s_env:

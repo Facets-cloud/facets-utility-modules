@@ -1,4 +1,3 @@
-
 locals {
   deploy_context               = jsondecode(file("../deploymentcontext.json"))
   dep_cluster                  = lookup(local.deploy_context, "cluster", {})
@@ -91,6 +90,35 @@ locals {
   } : lookup(local.advanced_config_values, "pod_distribution", {}) : null
   sidecars        = lookup(var.values.spec, "sidecars", lookup(local.advanced_config_values, "sidecars", {}))
   init_containers = lookup(var.values.spec, "init_containers", lookup(local.advanced_config_values, "init_containers", {}))
+
+  # Exclusion list for env/secret values (dynamically sourced from input values)
+  exclude_env_and_secret_values = try(
+    var.values.advanced.common.app_chart.values.exclude_env_and_secret_values,
+    []
+  )
+
+  # env_vars and all_secrets are sourced from input variables, not hardcoded
+  # Filtering is applied based on the exclusion list from input values
+  filtered_env_vars = {
+    for k, v in local.env_vars :
+    k => v
+    if !(contains(local.exclude_env_and_secret_values, v))
+  }
+
+  filtered_all_secrets = {
+    for k, v in local.all_secrets :
+    k => v
+    if !(contains(local.exclude_env_and_secret_values, v))
+  }
+
+  # Merge only filtered maps
+  env = merge(
+    lookup(local.dep_cluster, "globalVariables", {}),
+    local.filtered_env_vars,
+    local.build_id_env,
+    local.filtered_all_secrets,
+    length(local.deployment_id) > 0 ? { deployment_id = local.deployment_id } : {}
+  )
 }
 
 resource "helm_release" "app-chart" {
@@ -134,11 +162,7 @@ resource "helm_release" "app-chart" {
     }),
     yamlencode({
       spec = {
-        env = merge(lookup(local.dep_cluster, "globalVariables", {}), local.env_vars, local.build_id_env, local.all_secrets,
-          length(local.deployment_id) > 0 ? {
-            deployment_id = local.deployment_id
-          } : {}
-        )
+        env = local.env
       }
     }),
     yamlencode({
