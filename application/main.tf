@@ -19,9 +19,9 @@ locals {
   common_environment_variables = var.environment.common_environment_variables
   spec_environment_variables   = lookup(var.values.spec, "env", {})
   env_vars = (
-    lookup(var.instance.advanced.common, "include_common_env_variables", false)
-    ? merge(var.environment.common_environment_variables, lookup(var.instance.spec, "env", {}))
-    : lookup(var.instance.spec, "env", {})
+    lookup(var.values.advanced.common, "include_common_env_variables", false)
+    ? merge(var.environment.common_environment_variables, lookup(var.values.spec, "env", {}))
+    : lookup(var.values.spec, "env", {})
   )
   deployment_id                = lookup(local.common_advanced, "pass_deployment_id", false) ? var.environment.deployment_id : ""
   taints                       = lookup(local.kubernetes_node_pool_details, "taints", [])
@@ -96,7 +96,7 @@ locals {
   init_containers = lookup(var.values.spec, "init_containers", lookup(local.advanced_config_values, "init_containers", {}))
 
   exclude_env_and_secret_values = try(
-    var.instance.advanced.common.app_chart.values.exclude_env_and_secret_values,
+    var.values.advanced.common.app_chart.values.exclude_env_and_secret_values,
     []
   )
 
@@ -107,7 +107,7 @@ locals {
   }
 
   filtered_all_secrets = {
-    for k, v in (lookup(var.instance.advanced.common, "include_common_env_secrets", false) ? var.environment.secrets : {}) :
+    for k, v in (lookup(var.values.advanced.common, "include_common_env_secrets", false) ? var.environment.secrets : {}) :
     k => v
     if !(contains(local.exclude_env_and_secret_values, v))
   }
