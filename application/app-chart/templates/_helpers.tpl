@@ -788,6 +788,7 @@ Add sidecars to all the kubernetes objects that will inherit from the module cha
 {{- end }}
 {{- end }}
 {{- end }}
+{{- end }}
 {{- if and ( hasKey $v.runtime  "volumes") (gt (len $v.runtime.volumes) 0) }}
   volumeMounts:
 {{- if and ( hasKey $v.runtime.volumes  "config_maps") (gt (len $v.runtime.volumes.config_maps) 0) }}
