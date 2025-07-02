@@ -63,20 +63,23 @@ Inject env variables to the respecitve containers
 {{- define "app-chart.env" -}}
 {{- $name := .Values.metadata.name -}}
 {{- $allowDots := default false .Values.advanced.common.app_chart.values.allow_dots_in_env -}}
+{{- $excludes := .Values.advanced.common.app_chart.values.exclude_env_and_secret_values | default (list) -}}
 {{- range $k, $v := .Values.spec.env }}
-{{- if and (regexMatch "[.]" $k) (not $allowDots) }}
-{{- $K := $k | upper | replace "." "_" }}
+{{- if not (has $v $excludes) }}
+  {{- if and (regexMatch "[.]" $k) (not $allowDots) }}
+  {{- $K := $k | upper | replace "." "_" }}
 - name: {{ $K }}
   valueFrom:
     secretKeyRef:
       name: {{ $name }}-secret
       key: {{ $K }}
-{{- else }}
+  {{- else }}
 - name: {{ $k }}
   valueFrom:
     secretKeyRef:
       name: {{ $name }}-secret
       key: {{ $k }}
+  {{- end }}
 {{- end }}
 {{- end }}
 - name: POD_IP
@@ -784,6 +787,7 @@ Add sidecars to all the kubernetes objects that will inherit from the module cha
   {{- end }}
 {{- end }}
 {{- end }}
+{{- end }}
 {{- if and ( hasKey $v.runtime  "volumes") (gt (len $v.runtime.volumes) 0) }}
   volumeMounts:
 {{- if and ( hasKey $v.runtime.volumes  "config_maps") (gt (len $v.runtime.volumes.config_maps) 0) }}
@@ -859,7 +863,6 @@ Add sidecars to all the kubernetes objects that will inherit from the module cha
   {{- end }}
   {{/* End of resources logic for sidecars */}}
   {{- end }}
-{{- end }}
 {{- end }}
 {{- end }}
 {{/*
@@ -1069,7 +1072,6 @@ Mount volumes of sidecars in volumes for all type of kubernetes objects
 {{- end -}}
 {{- if and ( hasKey $v.runtime.volumes  "additional_volumes") (gt (len $v.runtime.volumes.additional_volumes) 0) }}
 {{ toYaml $v.runtime.volumes.additional_volumes }}
-{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
