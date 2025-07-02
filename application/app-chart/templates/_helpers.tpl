@@ -705,7 +705,8 @@ Add sidecars to all the kubernetes objects that will inherit from the module cha
     {{- toYaml $v.runtime.args | nindent 2 }}
 {{- end }}
 {{- end }}
-{{- if or ( hasKey $v.runtime "health_checks") (hasKey $v.runtime.health_checks "liveness_url") (hasKey $v.runtime.health_checks "liveness_exec_command") (hasKey $v.runtime.health_checks "liveness_port") (hasKey $v.runtime.health_checks "port")}}
+{{- if  hasKey $v.runtime "health_checks" }}
+{{- if or (hasKey $v.runtime.health_checks "liveness_url") (hasKey $v.runtime.health_checks "liveness_exec_command") (hasKey $v.runtime.health_checks "port")}}
   livenessProbe:
     failureThreshold: {{ default 10 $v.runtime.health_checks.liveness_failure_threshold }}
     initialDelaySeconds: {{ default 10 $v.runtime.health_checks.start_up_time }}
@@ -726,7 +727,7 @@ Add sidecars to all the kubernetes objects that will inherit from the module cha
     tcpSocket:
       port: {{ $v.runtime.health_checks.port }}
   {{- end }}
-{{- if or ( hasKey $v.runtime "health_checks") (hasKey $v.runtime.health_checks "readiness_url") (hasKey $v.runtime.health_checks "readiness_exec_command") (hasKey $v.runtime.health_checks "readiness_port") (hasKey $v.runtime.health_checks "port")}}
+{{- if or  (hasKey $v.runtime.health_checks "readiness_url") (hasKey $v.runtime.health_checks "readiness_exec_command") (hasKey $v.runtime.health_checks "port") }}
   readinessProbe:
     failureThreshold: {{ default 10 $v.runtime.health_checks.readiness_failure_threshold }}
     initialDelaySeconds: {{ default 10 $v.runtime.health_checks.start_up_time }}
@@ -748,7 +749,7 @@ Add sidecars to all the kubernetes objects that will inherit from the module cha
       port: {{ $v.runtime.health_checks.port }}
   {{- end }}
 {{- end }}
-{{- if or ( hasKey $v.runtime "health_checks") (hasKey $v.runtime.health_checks "startup_url") (hasKey $v.runtime.health_checks "startup_exec_command") (hasKey $v.runtime.health_checks "startup_port") (hasKey $v.runtime.health_checks "port")}}
+{{- if or (hasKey $v.runtime.health_checks "startup_url") (hasKey $v.runtime.health_checks "startup_exec_command") (hasKey $v.runtime.health_checks "port")}}
   startupProbe:
     failureThreshold: {{ default 10 $v.runtime.health_checks.startup_failure_threshold }}
     initialDelaySeconds: {{ default 10 $v.runtime.health_checks.start_up_time }}
@@ -778,6 +779,7 @@ Add sidecars to all the kubernetes objects that will inherit from the module cha
     tcpSocket: 
       port: {{ $v.runtime.health_checks.port }}
   {{- end }}
+{{- end }}
 {{- end }}
 {{- if  hasKey $v.runtime  "ports" }}
 {{- if gt (len $v.runtime.ports) 0 }}
