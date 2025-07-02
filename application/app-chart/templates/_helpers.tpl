@@ -63,23 +63,21 @@ Inject env variables to the respecitve containers
 {{- define "app-chart.env" -}}
 {{- $name := .Values.metadata.name -}}
 {{- $allowDots := default false .Values.advanced.common.app_chart.values.allow_dots_in_env -}}
-{{- $excludes := .Values.advanced.common.app_chart.values.exclude_env_and_secret_values | default (list) -}}
 {{- range $k, $v := .Values.spec.env }}
-{{- if not (include "app-chart.inList" (list $v $excludes)) }}
-  {{- if and (regexMatch "[.]" $k) (not $allowDots) }}
-  {{- $K := $k | upper | replace "." "_" }}
+{{- if and (regexMatch "[.]" $k) (not $allowDots) }}
+{{- $K := $k | upper | replace "." "_" }}
 - name: {{ $K }}
   valueFrom:
     secretKeyRef:
       name: {{ $name }}-secret
       key: {{ $K }}
-  {{- else }}
+{{- else }}
 - name: {{ $k }}
   valueFrom:
     secretKeyRef:
       name: {{ $name }}-secret
       key: {{ $k }}
-  {{- end }}
+{{- end }}
 {{- end }}
 - name: POD_IP
   valueFrom:
@@ -786,9 +784,6 @@ Add sidecars to all the kubernetes objects that will inherit from the module cha
   {{- end }}
 {{- end }}
 {{- end }}
-{{- end }}
-{{- end }}
-{{- end }}
 {{- if and ( hasKey $v.runtime  "volumes") (gt (len $v.runtime.volumes) 0) }}
   volumeMounts:
 {{- if and ( hasKey $v.runtime.volumes  "config_maps") (gt (len $v.runtime.volumes.config_maps) 0) }}
@@ -864,6 +859,7 @@ Add sidecars to all the kubernetes objects that will inherit from the module cha
   {{- end }}
   {{/* End of resources logic for sidecars */}}
   {{- end }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{/*
@@ -1077,6 +1073,7 @@ Mount volumes of sidecars in volumes for all type of kubernetes objects
 {{- end }}
 {{- end }}
 {{- end }}
+{{- end }}
 
 {{/*
 Mount volumes of initcontainer in volumes for all type of kubernetes objects
@@ -1122,6 +1119,7 @@ Mount volumes of initcontainer in volumes for all type of kubernetes objects
 {{- end }}
 {{- end }}
 {{- end }}
+{{- end }}
 
 {{/*
 Runtime Class Name for GKE Sandboxed pod
@@ -1158,18 +1156,3 @@ Get the replicas from autoscaling or instance_count and default to 1 if not set
 {{- default 1 .Values.spec.runtime.instance_count }}
 {{- end }}
 {{- end }}
-
-{{/*
-Check if a value is in a list
-*/}}
-{{- define "app-chart.inList" -}}
-{{- $found := false -}}
-{{- $search := index . 0 -}}
-{{- $list := index . 1 -}}
-{{- range $item := $list }}
-  {{- if eq $item $search }}
-    {{- $found = true }}
-  {{- end }}
-{{- end }}
-{{- $found -}}
-{{- end -}}
