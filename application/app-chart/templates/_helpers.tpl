@@ -65,7 +65,7 @@ Inject env variables to the respecitve containers
 {{- $allowDots := default false .Values.advanced.common.app_chart.values.allow_dots_in_env -}}
 {{- $excludes := .Values.advanced.common.app_chart.values.exclude_env_and_secret_values | default (list) -}}
 {{- range $k, $v := .Values.spec.env }}
-{{- if not (has $v $excludes) }}
+{{- if not (in $excludes $v) }}
   {{- if and (regexMatch "[.]" $k) (not $allowDots) }}
   {{- $K := $k | upper | replace "." "_" }}
 - name: {{ $K }}
