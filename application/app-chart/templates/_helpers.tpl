@@ -65,7 +65,13 @@ Inject env variables to the respecitve containers
 {{- $allowDots := default false .Values.advanced.common.app_chart.values.allow_dots_in_env -}}
 {{- $excludes := .Values.advanced.common.app_chart.values.exclude_env_and_secret_values | default (list) -}}
 {{- range $k, $v := .Values.spec.env }}
-{{- if not (in $excludes $v) }}
+{{- $skip := false -}}
+{{- range $excludes }}
+  {{- if eq . $v }}
+    {{- $skip = true }}
+  {{- end }}
+{{- end }}
+{{- if not $skip }}
   {{- if and (regexMatch "[.]" $k) (not $allowDots) }}
   {{- $K := $k | upper | replace "." "_" }}
 - name: {{ $K }}
@@ -80,7 +86,6 @@ Inject env variables to the respecitve containers
       name: {{ $name }}-secret
       key: {{ $k }}
   {{- end }}
-{{- end }}
 {{- end }}
 - name: POD_IP
   valueFrom:
@@ -1117,7 +1122,6 @@ Mount volumes of initcontainer in volumes for all type of kubernetes objects
 {{- end -}}
 {{- if and ( hasKey $v.runtime.volumes  "additional_volumes") (gt (len $v.runtime.volumes.additional_volumes) 0) }}
 {{ toYaml $v.runtime.volumes.additional_volumes }}
-{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
