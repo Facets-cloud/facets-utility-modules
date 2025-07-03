@@ -110,7 +110,7 @@ locals {
   }
 
   filtered_all_secrets = {
-    for k, v in (lookup(var.values.advanced.common, "include_common_env_secrets", false) ? var.environment.secrets : {}) :
+    for k, v in local.all_secrets :
     k => v
     if !(contains(local.exclude_env_and_secret_values, v))
   }
@@ -118,6 +118,7 @@ locals {
   final_env = merge(
     local.filtered_env_vars,
     local.build_id_env,
+    (local.deployment_id != "" ? { DEPLOYMENT_ID = local.deployment_id } : {}),
     local.filtered_all_secrets
   )
 }
