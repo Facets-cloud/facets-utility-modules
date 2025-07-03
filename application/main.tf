@@ -18,10 +18,14 @@ locals {
   advanced_config              = lookup(local.common_advanced, "app_chart", {})
   common_environment_variables = var.environment.common_environment_variables
   spec_environment_variables   = lookup(var.values.spec, "env", {})
-  env_vars = (
-    lookup(var.values.advanced.common, "include_common_env_variables", false)
-    ? merge(var.environment.common_environment_variables, lookup(var.values.spec, "env", {}))
-    : lookup(var.values.spec, "env", {})
+  include_common_env_variables = lookup(var.values.advanced.common, "include_common_env_variables", false)
+  spec_env_vars = lookup(var.values.spec, "env", {})
+  common_env_vars = var.environment.common_environment_variables
+
+  env_vars = jsondecode(
+    local.include_common_env_variables
+    ? jsonencode(merge(local.common_env_vars, local.spec_env_vars))
+    : jsonencode(local.spec_env_vars)
   )
   deployment_id                = lookup(local.common_advanced, "pass_deployment_id", false) ? var.environment.deployment_id : ""
   taints                       = lookup(local.kubernetes_node_pool_details, "taints", [])
