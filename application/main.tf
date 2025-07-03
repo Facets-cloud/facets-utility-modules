@@ -18,7 +18,7 @@ locals {
   advanced_config              = lookup(local.common_advanced, "app_chart", {})
   common_environment_variables = var.environment.common_environment_variables
   spec_environment_variables   = lookup(var.values.spec, "env", {})
-  include_common_env_variables = lookup(local.common_advanced, "include_common_env_variables", false)
+  include_common_env_variables = lookup(var.values.advanced.common, "include_common_env_variables", false)
   common_env_vars = var.environment.common_environment_variables
 
   env_vars = jsondecode(
