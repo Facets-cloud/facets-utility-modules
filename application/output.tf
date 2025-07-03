@@ -14,3 +14,7 @@ output "selector_labels" {
 output "namespace" {
   value = var.namespace
 }
+
+output "debug_filtered_env_vars" {
+  value = local.filtered_env_vars
+}
