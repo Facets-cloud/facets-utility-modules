@@ -158,6 +158,10 @@ resource "helm_release" "app-chart" {
       }
     })
   ]
+
+  lifecycle {
+    ignore_changes = [chart]
+  }
 }
 
 module "sts-pvc" {
