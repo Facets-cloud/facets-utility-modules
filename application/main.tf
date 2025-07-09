@@ -1,4 +1,3 @@
-
 locals {
   deploy_context               = jsondecode(file("../deploymentcontext.json"))
   dep_cluster                  = lookup(local.deploy_context, "cluster", {})
@@ -19,7 +18,14 @@ locals {
   advanced_config              = lookup(local.common_advanced, "app_chart", {})
   common_environment_variables = var.environment.common_environment_variables
   spec_environment_variables   = lookup(var.values.spec, "env", {})
-  env_vars                     = jsondecode(lookup(local.common_advanced, "include_common_env_variables", false) ? jsonencode(merge(local.common_environment_variables, local.spec_environment_variables)) : jsonencode(local.spec_environment_variables))
+  include_common_env_variables = lookup(var.values.advanced.common, "include_common_env_variables", false)
+  common_env_vars = var.environment.common_environment_variables
+
+  env_vars = jsondecode(
+    local.include_common_env_variables
+    ? jsonencode(merge(local.common_env_vars, local.spec_environment_variables))
+    : jsonencode(local.spec_environment_variables)
+  )
   deployment_id                = lookup(local.common_advanced, "pass_deployment_id", false) ? var.environment.deployment_id : ""
   taints                       = lookup(local.kubernetes_node_pool_details, "taints", [])
   chart_name                   = lookup(lookup(lookup(var.values, "metadata", {}), "labels", {}), "resourceName", var.chart_name)
@@ -91,6 +97,30 @@ locals {
   } : lookup(local.advanced_config_values, "pod_distribution", {}) : null
   sidecars        = lookup(var.values.spec, "sidecars", lookup(local.advanced_config_values, "sidecars", {}))
   init_containers = lookup(var.values.spec, "init_containers", lookup(local.advanced_config_values, "init_containers", {}))
+
+  exclude_env_and_secret_values = try(
+    var.values.advanced.common.app_chart.values.exclude_env_and_secret_values,
+    []
+  )
+
+  filtered_env_vars = {
+    for k, v in local.env_vars :
+    k => v
+    if !(contains(local.exclude_env_and_secret_values, v))
+  }
+
+  filtered_all_secrets = {
+    for k, v in local.all_secrets :
+    k => v
+    if !(contains(local.exclude_env_and_secret_values, v))
+  }
+
+  final_env = merge(
+    local.filtered_env_vars,
+    local.build_id_env,
+    (local.deployment_id != "" ? { DEPLOYMENT_ID = local.deployment_id } : {}),
+    local.filtered_all_secrets
+  )
 }
 
 resource "helm_release" "app-chart" {
@@ -134,11 +164,7 @@ resource "helm_release" "app-chart" {
     }),
     yamlencode({
       spec = {
-        env = merge(lookup(local.dep_cluster, "globalVariables", {}), local.env_vars, local.build_id_env, local.all_secrets,
-          length(local.deployment_id) > 0 ? {
-            deployment_id = local.deployment_id
-          } : {}
-        )
+        env = local.final_env
       }
     }),
     yamlencode({
