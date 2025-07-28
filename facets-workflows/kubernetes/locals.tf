@@ -55,7 +55,6 @@ locals {
     ' /workspace/.kube/config
 
     export KUBECONFIG=/workspace/.kube/config
-    cat /workspace/.kube/config
   EOT
 
   steps_with_k8s_env = [

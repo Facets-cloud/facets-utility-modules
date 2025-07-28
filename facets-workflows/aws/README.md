@@ -23,6 +23,8 @@ module "restart_task" {
   }
   account_id = var.inputs.cloud_account.attributes.account_id
 
+
+  # Following fiels should be configured accorind to the usecase
   name       = "vm-restart"
   params = [
     {
