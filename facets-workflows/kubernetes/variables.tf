@@ -5,19 +5,20 @@ variable "name" {
 
 variable "steps" {
   description = "List of steps for the Tekton Task."
-  type = list(object({
+  type = map(object({
     name      = string
     image     = string
     resources = any
     script    = string
     env       = list(any)
   }))
+  default = {}
 }
 
 variable "params" {
   description = "List of params for the Tekton Task."
-  type        = list(any)
-  default     = []
+  type        = map(any)
+  default     = {}
 }
 
 variable "instance_name" {

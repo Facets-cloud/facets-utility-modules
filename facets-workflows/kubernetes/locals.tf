@@ -58,7 +58,7 @@ locals {
   EOT
 
   steps_with_k8s_env = [
-    for step in var.steps : merge(
+    for step in values(var.steps) : merge(
       step,
       {
         env = concat(
@@ -107,7 +107,7 @@ locals {
           }
         ], local.steps_with_k8s_env)
       },
-      length(var.params) > 0 ? { params = var.params } : {}
+      length(var.params) > 0 ? { params = values(var.params) } : {}
     )
   }
 
