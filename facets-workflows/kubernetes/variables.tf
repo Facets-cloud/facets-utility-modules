@@ -17,7 +17,7 @@ variable "steps" {
 
 variable "params" {
   description = "List of params for the Tekton Task."
-  type        = map(any)
+  type        = any
   default     = {}
 }
 
