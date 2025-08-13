@@ -111,7 +111,7 @@ locals {
           }
         ], local.steps_with_k8s_env)
       },
-      length(var.params) > 0 ? { params = values(var.params) } : {}
+      length(var.params) > 0 ? { params = var.params } : {}
     )
   }
 
