@@ -95,9 +95,13 @@ locals {
       name      = module.task_name.name
       namespace = local.namespace
       labels = local.labels
+      annotations = {
+        "workflow.facets.cloud/serviceaccount" = "workflows-sa"
+      }
     }
     spec = merge(
       {
+        description = var.description == "" ? module.task_name.name : var.description,
         steps = concat([
           {
             name = "setup-credentials"
