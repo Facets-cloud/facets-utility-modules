@@ -11,7 +11,7 @@ variable "description" {
 
 variable "steps" {
   description = "List of steps for the Tekton Task."
-  type = map(object({
+  type = list(object({
     name      = string
     image     = string
     resources = any
