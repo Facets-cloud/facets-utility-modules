@@ -8,6 +8,7 @@ locals {
   k8s_secretmanger_secret_name = var.auth_secret_name
 
   labels = {
+    display_name     = var.name
     resource_name    = var.instance_name
     resource_kind    = var.instance.kind
     environment      = var.environment.unique_name
