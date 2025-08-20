@@ -11,7 +11,8 @@ locals {
     display_name     = var.name
     resource_name    = var.instance_name
     resource_kind    = var.instance.kind
-    environment      = var.environment.unique_name
+    environment_unique_name      = var.environment.unique_name
+    cluster_id      = local.cluster_id
   }
 
   name = "${var.instance_name}-${var.environment.unique_name}-${var.name}"
