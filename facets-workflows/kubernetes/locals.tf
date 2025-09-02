@@ -113,7 +113,17 @@ locals {
           }
         ], local.steps_with_k8s_env)
       },
-      length(var.params) > 0 ? { params = var.params } : {}
+      {
+        params = concat(
+          [
+            {
+              name = "FACETS_USER_EMAIL"
+              type = "string"
+            }
+          ],
+          var.params
+        )
+      }
     )
   }
 
