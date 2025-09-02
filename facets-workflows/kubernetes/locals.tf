@@ -85,7 +85,7 @@ locals {
       labels = local.labels
     }
     spec = {
-      image = "nixery.dev/shell/awscli2/kubectl/jq/yq-go"
+      image = "unni123123/facets-workflows:v1.0.0"
       script = local.k8s_init_commands
     }
   }
