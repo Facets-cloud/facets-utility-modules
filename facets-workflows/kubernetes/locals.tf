@@ -15,7 +15,7 @@ locals {
     cluster_id      = local.cluster_id
   }
 
-  name = "${var.instance_name}-${var.environment.unique_name}-${var.name}"
+  name = md5("${var.instance_name}-${var.environment.unique_name}-${var.name}")
   namespace = "tekton-pipelines"
 
   k8s_init_commands = <<-EOT
