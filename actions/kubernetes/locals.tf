@@ -17,7 +17,7 @@ locals {
     #!/bin/bash
     set -e
     mkdir -p /workspace/.kube
-    echo -n "$(params.FACETS_USER_KUBECONFIG)" | base64 -d > /workspace/.kube/config
+    echo -n "$FACETS_USER_KUBECONFIG" | base64 -d > /workspace/.kube/config
     export KUBECONFIG=/workspace/.kube/config
   EOT
 
@@ -49,6 +49,18 @@ locals {
     spec = {
       image = "facetscloud/actions-credentials-setup:v1.0.0"
       script = local.k8s_init_commands
+      params = [
+        {
+          name = "FACETS_USER_KUBECONFIG"
+          type = "string"
+        }
+      ]
+      env = [
+        {
+          name = "FACETS_USER_KUBECONFIG"
+          value = "$(params.FACETS_USER_KUBECONFIG)"
+        }
+      ]
     }
   }
 
@@ -69,6 +81,12 @@ locals {
             ref = {
               name = module.stepaction_name.name
             }
+            params = [
+              {
+                name = "FACETS_USER_KUBECONFIG"
+                value = "$(params.FACETS_USER_KUBECONFIG)"
+              }
+            ]
           }
         ], local.steps_with_k8s_env)
       },
@@ -77,10 +95,6 @@ locals {
           [
             {
               name = "FACETS_USER_EMAIL"
-              type = "string"
-            },
-            {
-              name = "FACETS_USER_KUBECONFIG"
               type = "string"
             }
           ],
