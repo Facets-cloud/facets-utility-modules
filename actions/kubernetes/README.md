@@ -17,7 +17,6 @@ module "rollout_restart_task" {
   instance_name = var.instance_name
   environment   = var.environment
   instance      = var.instance
-  auth_secret_name = var.inputs.kubernetes_details.attributes.legacy_outputs.k8s_details.workflows_auth_secret_name
   providers = {
     helm = "helm.release-pod"
   }

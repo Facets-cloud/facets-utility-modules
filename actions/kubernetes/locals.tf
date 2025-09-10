@@ -1,11 +1,6 @@
 locals {
   deployment_context           = jsondecode(file("/sources/primary/capillary-cloud-tf/deploymentcontext.json"))
   cluster_id                   = lookup(lookup(local.deployment_context, "cluster", {}), "id")
-  secrets_context              = lookup(local.deployment_context, "secretsContext", {})
-  secret_manager_region        = lookup(local.secrets_context, "secretManagerRegion", null)
-  cloud_account_secrets_id     = lookup(local.secrets_context, "cloudAccountSecretsId", null)
-  cloud_account_prefix         = try(split("/", local.cloud_account_secrets_id)[0], null)
-  k8s_secretmanger_secret_name = var.auth_secret_name
 
   labels = {
     display_name     = var.name
@@ -21,41 +16,8 @@ locals {
   k8s_init_commands = <<-EOT
     #!/bin/bash
     set -e
-    SECRET=$(aws secretsmanager get-secret-value --secret-id "${local.k8s_secretmanger_secret_name}" --region "${local.secret_manager_region}" --query SecretString --output text)
-    export K8S_HOST=$(echo $SECRET | jq -r .host)
-    export K8S_CA=$(echo $SECRET | jq -r .cluster_ca_certificate | base64 -w 0)
-    export K8S_TOKEN=$(echo $SECRET | jq -r .token)
-
     mkdir -p /workspace/.kube
-    touch /workspace/.kube/config
-    
-    # Create Kubernetes config using yq v4.x syntax
-    yq -i '
-      .apiVersion = "v1" |
-      .kind = "Config" |
-      .current-context = "k8s-context" |
-      .clusters = [{
-        "name": "k8s",
-        "cluster": {
-          "server": strenv(K8S_HOST),
-          "certificate-authority-data": strenv(K8S_CA)
-        }
-      }] |
-      .contexts = [{
-        "name": "k8s-context", 
-        "context": {
-          "cluster": "k8s",
-          "user": "k8s-user"
-        }
-      }] |
-      .users = [{
-        "name": "k8s-user",
-        "user": {
-          "token": strenv(K8S_TOKEN)
-        }
-      }]
-    ' /workspace/.kube/config
-
+    echo -n "$(params.FACETS_USER_KUBECONFIG)" | base64 -d > /workspace/.kube/config
     export KUBECONFIG=/workspace/.kube/config
   EOT
 
@@ -97,9 +59,6 @@ locals {
       name      = module.task_name.name
       namespace = local.namespace
       labels = local.labels
-      annotations = {
-        "workflow.facets.cloud/serviceaccount" = "workflows-sa"
-      }
     }
     spec = merge(
       {
@@ -118,6 +77,10 @@ locals {
           [
             {
               name = "FACETS_USER_EMAIL"
+              type = "string"
+            },
+            {
+              name = "FACETS_USER_KUBECONFIG"
               type = "string"
             }
           ],

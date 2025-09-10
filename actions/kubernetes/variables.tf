@@ -41,8 +41,3 @@ variable "environment" {
 variable "instance" {
   type = any
 }
-
-variable "auth_secret_name" {
-  type = string
-  default = "var.inputs.kubernetes_details.attributes.legacy_outputs.k8s_details.workflows_auth_secret_name"
-}
