@@ -96,6 +96,10 @@ locals {
             {
               name = "FACETS_USER_EMAIL"
               type = "string"
+            },
+            {
+              name = "FACETS_USER_KUBECONFIG"
+              type = "string"
             }
           ],
           var.params
