@@ -1,9 +1,18 @@
-module "tekton_resources" {
-  source          = "github.com/Facets-cloud/facets-utility-modules//any-k8s-resources"
-  namespace       = local.namespace
-  advanced_config = {}
-  name            = module.workflow_helm_name.name
-  resources_data  = local.resources_data
+resource "helm_release" "workflows" {
+  provider         = "helm-release-pod"
+  name             = module.workflow_helm_name.name
+  chart            = "${path.module}/dynamic-k8s-resources-0.1.0.tgz"
+  timeout          = 300
+  wait             = false
+  version          = "0.1.0"
+  create_namespace = true
+  max_history      = 10
+  namespace        = local.namespace
+  values = [
+    jsonencode({
+      resources = local.resources_data
+    })
+  ]
 }
 
 module "workflow_helm_name" {
