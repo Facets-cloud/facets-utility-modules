@@ -47,7 +47,7 @@ locals {
       labels = local.labels
     }
     spec = {
-      image = "unni123123/facets-workflows:v1.0.0"
+      image = "facetscloud/actions-base-image:v1.0.0"
       script = local.k8s_init_commands
       params = [
         {
