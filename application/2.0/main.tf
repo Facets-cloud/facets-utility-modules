@@ -113,13 +113,7 @@ resource "helm_release" "app-chart" {
       metadata = {
         name        = var.chart_name
         annotations = merge(var.annotations, { buildId = local.build_id })
-        labels = merge(
-          var.labels,
-          {
-            artifact_external_id = can(regex("^(([a-za-z0-9][-a-za-z0-9_.]*)?[a-za-z0-9])?$", lower(local.build_id))) ? lower(local.build_id) : "INVALID"
-            artifact_name        = can(regex("^([^/]+/)?([^:]+)", local.image_id)) ? regex("^([^/]+/)?([^:]+)", local.image_id)[1] : "INVALID"
-          }
-        )
+        labels = var.labels
       }
       spec = {
         release = {
