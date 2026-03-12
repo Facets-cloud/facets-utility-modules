@@ -5,6 +5,7 @@ output "output_attributes" {
 
 output "output_interfaces" {
   value       = local.output_interfaces
+  sensitive   = true
   description = "Module output interfaces (rule × domain cross-product)"
 }
 

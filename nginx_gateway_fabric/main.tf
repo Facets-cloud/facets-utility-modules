@@ -762,7 +762,7 @@ module "http01_certificate" {
     spec = {
       secretName = "${local.name}-${each.key}-tls-cert"
       issuerRef = {
-        name = local.cluster_issuer_gateway_http
+        name = local.effective_cluster_issuer
         kind = "ClusterIssuer"
       }
       dnsNames = [
@@ -812,7 +812,7 @@ module "http01_certificate_additional" {
     spec = {
       secretName = each.value.secret_name
       issuerRef = {
-        name = local.cluster_issuer_gateway_http
+        name = local.effective_cluster_issuer
         kind = "ClusterIssuer"
       }
       dnsNames = [

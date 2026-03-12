@@ -27,7 +27,7 @@ locals {
   # Generate output interfaces for every rule × domain combination
   # Each rule is expanded across all configured domains (not just the base domain)
   # Base domain entries are excluded when disable_base_domain is true
-  output_interfaces = merge([
+  output_interfaces = length(local.rulesFiltered) == 0 || length(local.domains) == 0 ? {} : merge([
     for route_key, route in local.rulesFiltered : {
       for domain_key, domain in local.domains :
       "${route_key}--${domain_key}" => {
