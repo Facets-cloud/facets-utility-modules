@@ -60,6 +60,7 @@ variable "inputs" {
     }))
     cert_manager_details = optional(object({
       attributes = optional(object({
+        acme_email          = optional(string)
         cluster_issuer_http = optional(string)
       }))
     }))
