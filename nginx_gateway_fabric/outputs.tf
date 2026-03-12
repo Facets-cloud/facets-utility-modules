@@ -58,8 +58,11 @@ output "subdomain" {
 }
 
 output "tls_secret" {
-  value       = "${local.name}-facets-tls-cert"
-  description = "TLS certificate secret name for the base domain"
+  value = {
+    for domain_key, domain in local.domains :
+    domain_key => lookup(domain, "certificate_reference", "") != "" ? domain.certificate_reference : "${local.name}-${domain_key}-tls-cert"
+  }
+  description = "Map of domain keys to their TLS certificate secret names"
 }
 
 output "load_balancer_hostname" {

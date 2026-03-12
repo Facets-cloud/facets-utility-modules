@@ -674,7 +674,7 @@ resource "tls_self_signed_cert" "bootstrap" {
   ]
 }
 
-resource "kubernetes_secret" "bootstrap_tls" {
+resource "kubernetes_secret_v1" "bootstrap_tls" {
   for_each = local.bootstrap_tls_domains
 
   metadata {
@@ -721,7 +721,7 @@ resource "tls_self_signed_cert" "bootstrap_additional" {
   ]
 }
 
-resource "kubernetes_secret" "bootstrap_tls_additional" {
+resource "kubernetes_secret_v1" "bootstrap_tls_additional" {
   for_each = local.additional_hostname_configs
 
   metadata {
@@ -1057,8 +1057,8 @@ resource "helm_release" "nginx_gateway_fabric" {
   ]
 
   depends_on = [
-    kubernetes_secret.bootstrap_tls,
-    kubernetes_secret.bootstrap_tls_additional
+    kubernetes_secret_v1.bootstrap_tls,
+    kubernetes_secret_v1.bootstrap_tls_additional
   ]
 }
 
@@ -1116,7 +1116,7 @@ module "gateway_api_resources" {
   resources_data  = local.gateway_api_resources
   advanced_config = {}
 
-  depends_on = [helm_release.nginx_gateway_fabric, kubernetes_secret.basic_auth]
+  depends_on = [helm_release.nginx_gateway_fabric, kubernetes_secret_v1.basic_auth]
 }
 
 # Basic Authentication using NGF AuthenticationFilter CRD
@@ -1130,7 +1130,7 @@ resource "random_string" "basic_auth_password" {
   special = false
 }
 
-resource "kubernetes_secret" "basic_auth" {
+resource "kubernetes_secret_v1" "basic_auth" {
   count = lookup(var.instance.spec, "basic_auth", false) ? 1 : 0
 
   metadata {
