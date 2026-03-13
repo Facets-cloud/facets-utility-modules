@@ -964,6 +964,7 @@ resource "helm_release" "nginx_gateway_fabric" {
 
         service = {
           type                  = "LoadBalancer"
+          loadBalancerClass     = var.load_balancer_class != "" ? var.load_balancer_class : null
           externalTrafficPolicy = "Cluster"
           # Service patches for annotations and labels
           patches = [

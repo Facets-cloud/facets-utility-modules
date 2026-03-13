@@ -90,6 +90,12 @@ variable "service_annotations" {
   description = "Cloud-specific annotations for the LoadBalancer service"
 }
 
+variable "load_balancer_class" {
+  type        = string
+  default     = ""
+  description = "LoadBalancerClass for the gateway service (e.g. service.k8s.aws/nlb, eks.amazonaws.com/nlb)"
+}
+
 variable "nginx_proxy_extra_config" {
   type        = any
   default     = {}
