@@ -1173,12 +1173,12 @@ resource "aws_route53_record" "cluster-base-domain" {
     helm_release.nginx_gateway_fabric,
     data.kubernetes_service.gateway_lb
   ]
-  zone_id = local.tenant_base_domain_id
-  name    = local.base_domain
-  type    = local.record_type
-  ttl     = "300"
-  records = [local.lb_record_value]
-  # provider = "aws3tooling"
+  zone_id  = local.tenant_base_domain_id
+  name     = local.base_domain
+  type     = local.record_type
+  ttl      = "300"
+  records  = [local.lb_record_value]
+  provider = aws3tooling
   lifecycle {
     prevent_destroy = true
   }
@@ -1190,12 +1190,12 @@ resource "aws_route53_record" "cluster-base-domain-wildcard" {
     helm_release.nginx_gateway_fabric,
     data.kubernetes_service.gateway_lb
   ]
-  zone_id = local.tenant_base_domain_id
-  name    = local.base_subdomain
-  type    = local.record_type
-  ttl     = "300"
-  records = [local.lb_record_value]
-  # provider = "aws3tooling"
+  zone_id  = local.tenant_base_domain_id
+  name     = local.base_subdomain
+  type     = local.record_type
+  ttl      = "300"
+  records  = [local.lb_record_value]
+  provider = aws3tooling
   lifecycle {
     prevent_destroy = true
   }
