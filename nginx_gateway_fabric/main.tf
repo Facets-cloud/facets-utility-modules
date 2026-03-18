@@ -745,18 +745,20 @@ locals {
   # Release 2: HTTPS HTTPRoutes — routes attached to HTTPS listener(s)
   # When external_tls_termination + split: only routes with "-https" suffix (or no suffix)
   # When non-external-TLS: all routes (they carry both listeners in parentRefs)
-  gateway_api_resources_https_routes = {
+  # Wrapped in merge() to normalize type to map(any) for consistent Terraform typing
+  gateway_api_resources_https_routes = merge({
     for k, v in local.httproute_resources :
     k => v if !endswith(k, "-http")
-  }
+  })
 
   # Release 3: HTTP traffic handling
   # When force_ssl_redirection = true: single blanket redirect rule (301 HTTP → HTTPS)
   # When force_ssl_redirection = false: HTTP listener HTTPRoutes (the "-http" suffix routes)
-  gateway_api_resources_http_routes = local.force_ssl_redirection ? local.http_redirect_resources : {
+  # Both branches wrapped in merge() to ensure consistent types for the conditional
+  gateway_api_resources_http_routes = local.force_ssl_redirection ? merge(local.http_redirect_resources) : merge({
     for k, v in local.httproute_resources :
     k => v if endswith(k, "-http")
-  }
+  })
 }
 
 # Bootstrap TLS Private Key for HTTP-01 validation
