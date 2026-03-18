@@ -248,297 +248,345 @@ locals {
   # Note: GatewayClass, Gateway, and NginxProxy are created by the Helm chart
   force_ssl_redirection = lookup(var.instance.spec, "force_ssl_redirection", false)
 
-  httproute_resources = {
-    for k, v in local.rulesFiltered : "httproute-${lower(var.instance_name)}-${k}" => {
-      apiVersion = "gateway.networking.k8s.io/v1"
-      kind       = "HTTPRoute"
-      metadata = {
-        name      = "${lower(var.instance_name)}-${k}"
-        namespace = var.environment.namespace
-      }
-      spec = {
-        # Reference the correct listener(s) for this route's hostnames
-        # External TLS mode: all routes reference the single "https" listener
-        # cert-manager mode: routes reference per-domain HTTPS listeners
-        # When force_ssl_redirection is disabled, also attach to HTTP listener so traffic is served on port 80
-        parentRefs = concat(
-          var.external_tls_termination ? [{
-            # External TLS: single listener for all routes
+  # When external TLS termination is active, routes need split variants (one per listener)
+  # so that X-Forwarded-Proto can be set correctly per protocol via RequestHeaderModifier.
+  # - "https" variant: attached to HTTPS listener, sets proto headers to "https"
+  # - "http" variant: attached to HTTP listener, no proto override needed ($scheme = "http" is correct)
+  # When external_tls_termination is false, $scheme is accurate and no split/filter is needed.
+  httproute_variants = var.external_tls_termination && !local.force_ssl_redirection ? {
+    "https" = { suffix = "-https", listener = "https", proto = "https" }
+    "http"  = { suffix = "-http", listener = "http", proto = null }
+    } : (var.external_tls_termination ? {
+      "https" = { suffix = "", listener = "https", proto = "https" }
+      } : {
+      "default" = { suffix = "", listener = "default", proto = null }
+  })
+
+  httproute_resources = merge([
+    for variant_key, variant in local.httproute_variants : {
+      for k, v in local.rulesFiltered : "httproute-${lower(var.instance_name)}-${k}${variant.suffix}" => {
+        apiVersion = "gateway.networking.k8s.io/v1"
+        kind       = "HTTPRoute"
+        metadata = {
+          name      = "${lower(var.instance_name)}-${k}${variant.suffix}"
+          namespace = var.environment.namespace
+        }
+        spec = {
+          # Reference the correct listener(s) for this route's hostnames
+          # External TLS mode: split routes reference individual listeners (https or http)
+          # cert-manager mode: routes reference per-domain HTTPS listeners + optionally HTTP
+          parentRefs = variant.listener == "https" ? [{
             name        = local.name
             namespace   = var.environment.namespace
             sectionName = "https"
-          }] : (
-            lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
-              # No domain_prefix - use base domain listeners
-              for domain_key, domain in local.domains : {
-                name        = local.name
-                namespace   = var.environment.namespace
-                sectionName = "https-${domain_key}"
-              }
-              ] : [
-              # Has domain_prefix:
-              # - If parent domain has certificate_reference → use wildcard domain listener (*.domain covers subdomains)
-              # - Otherwise → use additional hostname listener
-              for domain_key, domain in local.domains : {
-                name        = local.name
-                namespace   = var.environment.namespace
-                sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
-              }
-            ]
-          ),
-          # Also attach to HTTP listener when SSL redirection is disabled
-          !local.force_ssl_redirection ? [{
-            name        = local.name
-            namespace   = var.environment.namespace
-            sectionName = "http"
-          }] : []
-        )
-
-        # Include all domains in hostnames - Gateway API supports multiple hostnames per route
-        hostnames = distinct([
-          for domain_key, domain in local.domains :
-          lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ?
-          domain.domain :
-          "${lookup(v, "domain_prefix", null)}.${domain.domain}"
-        ])
-
-        rules = [{
-          matches = concat(
-            # Path matching (with optional method and query params)
-            [merge(
-              {
-                path = {
-                  type  = lookup(v, "path_type", "RegularExpression")
-                  value = lookup(v, "path", "/")
+            }] : (variant.listener == "http" ? [{
+              name        = local.name
+              namespace   = var.environment.namespace
+              sectionName = "http"
+            }] : (
+            # Default (non-external-TLS): original logic with both listeners
+            concat(
+              lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
+                for domain_key, domain in local.domains : {
+                  name        = local.name
+                  namespace   = var.environment.namespace
+                  sectionName = "https-${domain_key}"
                 }
-              },
-              # Method matching (ALL or null means match all methods)
-              lookup(v, "method", null) != null && lookup(v, "method", "ALL") != "ALL" ? {
-                method = v.method
-              } : {},
-              # Query parameter matching
-              length(lookup(v, "query_param_matches", {})) > 0 ? {
-                queryParams = [
-                  for key, qp in v.query_param_matches : {
-                    name  = qp.name
-                    value = qp.value
-                    type  = lookup(qp, "type", "Exact")
-                  }
-                ]
-              } : {},
-              # Header matching
-              length(lookup(v, "header_matches", {})) > 0 ? {
-                headers = [
-                  for key, header in v.header_matches : {
-                    name  = header.name
-                    value = header.value
-                    type  = lookup(header, "type", "Exact")
-                  }
-                ]
-              } : {}
-            )]
-          )
+                ] : [
+                for domain_key, domain in local.domains : {
+                  name        = local.name
+                  namespace   = var.environment.namespace
+                  sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
+                }
+              ],
+              !local.force_ssl_redirection ? [{
+                name        = local.name
+                namespace   = var.environment.namespace
+                sectionName = "http"
+              }] : []
+            )
+          ))
 
-          filters = concat(
-            # Basic auth filter (applied when basic_auth is enabled and route doesn't have disable_auth)
-            lookup(var.instance.spec, "basic_auth", false) && !lookup(v, "disable_auth", false) ? [{
-              type = "ExtensionRef"
-              extensionRef = {
-                group = "gateway.nginx.org"
-                kind  = "AuthenticationFilter"
-                name  = "${local.name}-basic-auth"
-              }
-            }] : [],
-            # Static filters
-            [
-              for filter in [
-                # Request header modification
-                lookup(v, "request_header_modifier", null) != null ? {
-                  type = "RequestHeaderModifier"
-                  requestHeaderModifier = merge(
-                    lookup(v.request_header_modifier, "add", null) != null ? {
-                      add = [for key, header in v.request_header_modifier.add : { name = header.name, value = header.value }]
-                    } : {},
-                    lookup(v.request_header_modifier, "set", null) != null ? {
-                      set = [for key, header in v.request_header_modifier.set : { name = header.name, value = header.value }]
-                    } : {},
-                    lookup(v.request_header_modifier, "remove", null) != null ? {
-                      remove = [for key, header in v.request_header_modifier.remove : header.name]
-                    } : {}
-                  )
-                } : null,
+          # Include all domains in hostnames - Gateway API supports multiple hostnames per route
+          hostnames = distinct([
+            for domain_key, domain in local.domains :
+            lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ?
+            domain.domain :
+            "${lookup(v, "domain_prefix", null)}.${domain.domain}"
+          ])
 
-                # Response header modification (security headers + CORS + custom headers)
+          rules = [{
+            matches = concat(
+              # Path matching (with optional method and query params)
+              [merge(
                 {
-                  type = "ResponseHeaderModifier"
-                  responseHeaderModifier = merge(
-                    {
-                      add = [for name, value in merge(
-                        local.security_headers,
-                        { for key, header in lookup(lookup(v, "response_header_modifier", {}), "add", {}) : header.name => header.value },
-                        local.cors_headers[k]
-                      ) : { name = name, value = value }]
-                    },
-                    lookup(lookup(v, "response_header_modifier", {}), "set", null) != null ? {
-                      set = [for key, header in v.response_header_modifier.set : { name = header.name, value = header.value }]
-                    } : {},
-                    lookup(lookup(v, "response_header_modifier", {}), "remove", null) != null ? {
-                      remove = [for key, header in v.response_header_modifier.remove : header.name]
-                    } : {}
-                  )
-                },
-
-                # Request mirroring
-                lookup(v, "request_mirror", null) != null ? {
-                  type = "RequestMirror"
-                  requestMirror = {
-                    backendRef = {
-                      name      = v.request_mirror.service_name
-                      port      = tonumber(v.request_mirror.port)
-                      namespace = lookup(v.request_mirror, "namespace", v.namespace)
-                    }
+                  path = {
+                    type  = lookup(v, "path_type", "RegularExpression")
+                    value = lookup(v, "path", "/")
                   }
-                } : null
-                # Note: SSL redirection is handled by separate http_redirect_resources HTTPRoutes
-                # RequestRedirect filter cannot be used together with backendRefs in the same rule
-              ] : filter if filter != null
-            ],
-            # URL rewriting (from patternProperties)
-            [
-              for key, rewrite in lookup(v, "url_rewrite", {}) : {
-                type = "URLRewrite"
-                urlRewrite = merge(
-                  lookup(rewrite, "hostname", null) != null ? {
-                    hostname = rewrite.hostname
-                  } : {},
-                  lookup(rewrite, "path_type", null) != null && lookup(rewrite, "replace_path", null) != null ? {
-                    path = merge(
-                      { type = rewrite.path_type },
-                      rewrite.path_type == "ReplaceFullPath" ? {
-                        replaceFullPath = rewrite.replace_path
+                },
+                # Method matching (ALL or null means match all methods)
+                lookup(v, "method", null) != null && lookup(v, "method", "ALL") != "ALL" ? {
+                  method = v.method
+                } : {},
+                # Query parameter matching
+                length(lookup(v, "query_param_matches", {})) > 0 ? {
+                  queryParams = [
+                    for key, qp in v.query_param_matches : {
+                      name  = qp.name
+                      value = qp.value
+                      type  = lookup(qp, "type", "Exact")
+                    }
+                  ]
+                } : {},
+                # Header matching
+                length(lookup(v, "header_matches", {})) > 0 ? {
+                  headers = [
+                    for key, header in v.header_matches : {
+                      name  = header.name
+                      value = header.value
+                      type  = lookup(header, "type", "Exact")
+                    }
+                  ]
+                } : {}
+              )]
+            )
+
+            filters = concat(
+              # Basic auth filter (applied when basic_auth is enabled and route doesn't have disable_auth)
+              lookup(var.instance.spec, "basic_auth", false) && !lookup(v, "disable_auth", false) ? [{
+                type = "ExtensionRef"
+                extensionRef = {
+                  group = "gateway.nginx.org"
+                  kind  = "AuthenticationFilter"
+                  name  = "${local.name}-basic-auth"
+                }
+              }] : [],
+              # Static filters
+              [
+                for filter in [
+                  # Request header modification (merges user-specified headers with external TLS proto headers)
+                  # Gateway API allows only one RequestHeaderModifier per rule, so we merge them
+                  # Request header modification (merges user-specified headers with external TLS proto headers)
+                  # Gateway API allows only one RequestHeaderModifier per rule, so we merge them.
+                  # User-specified headers take precedence — if the user sets X-Forwarded-Proto etc.
+                  # in their spec, we don't inject our version for those headers.
+                  (lookup(v, "request_header_modifier", null) != null || variant.proto != null) ? {
+                    type = "RequestHeaderModifier"
+                    requestHeaderModifier = merge(
+                      lookup(lookup(v, "request_header_modifier", {}), "add", null) != null ? {
+                        add = [for key, header in v.request_header_modifier.add : { name = header.name, value = header.value }]
                       } : {},
-                      rewrite.path_type == "ReplacePrefixMatch" ? {
-                        replacePrefixMatch = rewrite.replace_path
+                      {
+                        set = concat(
+                          try([for key, header in v.request_header_modifier.set : { name = header.name, value = header.value }], []),
+                          # Only inject proto headers that the user hasn't already specified
+                          variant.proto != null ? [
+                            for h in [
+                              { name = "X-Forwarded-Proto", value = variant.proto },
+                              { name = "X-Forwarded-Scheme", value = variant.proto },
+                              { name = "X-Scheme", value = variant.proto },
+                              ] : h if !contains(
+                              try([for key, header in v.request_header_modifier.set : lower(header.name)], []),
+                              lower(h.name)
+                            )
+                          ] : []
+                        )
+                      },
+                      lookup(lookup(v, "request_header_modifier", {}), "remove", null) != null ? {
+                        remove = [for key, header in v.request_header_modifier.remove : header.name]
                       } : {}
                     )
-                  } : {}
-                )
-              }
-            ]
-          )
+                  } : null,
 
-          # Request/backend timeouts - default 300s (equivalent to proxy-read-timeout/proxy-send-timeout)
-          timeouts = {
-            request        = lookup(lookup(v, "timeouts", {}), "request", "300s")
-            backendRequest = lookup(lookup(v, "timeouts", {}), "backend_request", "300s")
-          }
+                  # Response header modification (security headers + CORS + custom headers)
+                  {
+                    type = "ResponseHeaderModifier"
+                    responseHeaderModifier = merge(
+                      {
+                        add = [for name, value in merge(
+                          local.security_headers,
+                          { for key, header in lookup(lookup(v, "response_header_modifier", {}), "add", {}) : header.name => header.value },
+                          local.cors_headers[k]
+                        ) : { name = name, value = value }]
+                      },
+                      lookup(lookup(v, "response_header_modifier", {}), "set", null) != null ? {
+                        set = [for key, header in v.response_header_modifier.set : { name = header.name, value = header.value }]
+                      } : {},
+                      lookup(lookup(v, "response_header_modifier", {}), "remove", null) != null ? {
+                        remove = [for key, header in v.response_header_modifier.remove : header.name]
+                      } : {}
+                    )
+                  },
 
-          backendRefs = concat(
-            # Primary backend
-            [{
-              name      = v.service_name
-              port      = tonumber(v.port)
-              weight    = lookup(lookup(v, "canary_deployment", {}), "enabled", false) ? 100 - lookup(lookup(v, "canary_deployment", {}), "canary_weight", 10) : 100
-              namespace = v.namespace
-            }],
-            # Canary backend (if enabled)
-            lookup(lookup(v, "canary_deployment", {}), "enabled", false) ? [{
-              name      = lookup(lookup(v, "canary_deployment", {}), "canary_service", "")
-              port      = tonumber(v.port)
-              weight    = lookup(lookup(v, "canary_deployment", {}), "canary_weight", 10)
-              namespace = v.namespace
-            }] : []
-          )
-        }]
-      }
-    } if !lookup(lookup(v, "grpc_config", {}), "enabled", false)
-  }
+                  # Request mirroring
+                  lookup(v, "request_mirror", null) != null ? {
+                    type = "RequestMirror"
+                    requestMirror = {
+                      backendRef = {
+                        name      = v.request_mirror.service_name
+                        port      = tonumber(v.request_mirror.port)
+                        namespace = lookup(v.request_mirror, "namespace", v.namespace)
+                      }
+                    }
+                  } : null
+                  # Note: SSL redirection is handled by separate http_redirect_resources HTTPRoutes
+                  # RequestRedirect filter cannot be used together with backendRefs in the same rule
+                ] : filter if filter != null
+              ],
+              # URL rewriting (from patternProperties)
+              [
+                for key, rewrite in lookup(v, "url_rewrite", {}) : {
+                  type = "URLRewrite"
+                  urlRewrite = merge(
+                    lookup(rewrite, "hostname", null) != null ? {
+                      hostname = rewrite.hostname
+                    } : {},
+                    lookup(rewrite, "path_type", null) != null && lookup(rewrite, "replace_path", null) != null ? {
+                      path = merge(
+                        { type = rewrite.path_type },
+                        rewrite.path_type == "ReplaceFullPath" ? {
+                          replaceFullPath = rewrite.replace_path
+                        } : {},
+                        rewrite.path_type == "ReplacePrefixMatch" ? {
+                          replacePrefixMatch = rewrite.replace_path
+                        } : {}
+                      )
+                    } : {}
+                  )
+                }
+              ]
+            )
 
-  # GRPCRoute Resources
-  grpcroute_resources = {
-    for k, v in local.rulesFiltered : "grpcroute-${lower(var.instance_name)}-${k}" => {
-      apiVersion = "gateway.networking.k8s.io/v1"
-      kind       = "GRPCRoute"
-      metadata = {
-        name      = "${lower(var.instance_name)}-${k}-grpc"
-        namespace = var.environment.namespace
-      }
-      spec = {
-        # Reference the correct listener(s) for this route's hostnames
-        # External TLS mode: all routes reference the single "https" listener
-        # cert-manager mode: routes reference per-domain HTTPS listeners
-        parentRefs = concat(
-          var.external_tls_termination ? [{
-            # External TLS: single listener for all routes
+            # Request/backend timeouts - default 300s (equivalent to proxy-read-timeout/proxy-send-timeout)
+            timeouts = {
+              request        = lookup(lookup(v, "timeouts", {}), "request", "300s")
+              backendRequest = lookup(lookup(v, "timeouts", {}), "backend_request", "300s")
+            }
+
+            backendRefs = concat(
+              # Primary backend
+              [{
+                name      = v.service_name
+                port      = tonumber(v.port)
+                weight    = lookup(lookup(v, "canary_deployment", {}), "enabled", false) ? 100 - lookup(lookup(v, "canary_deployment", {}), "canary_weight", 10) : 100
+                namespace = v.namespace
+              }],
+              # Canary backend (if enabled)
+              lookup(lookup(v, "canary_deployment", {}), "enabled", false) ? [{
+                name      = lookup(lookup(v, "canary_deployment", {}), "canary_service", "")
+                port      = tonumber(v.port)
+                weight    = lookup(lookup(v, "canary_deployment", {}), "canary_weight", 10)
+                namespace = v.namespace
+              }] : []
+            )
+          }]
+        }
+      } if !lookup(lookup(v, "grpc_config", {}), "enabled", false)
+    }
+  ]...)
+
+  # GRPCRoute Resources — same split-variant logic as HTTPRoutes for external TLS termination
+  grpcroute_variants = var.external_tls_termination && !local.force_ssl_redirection ? {
+    "https" = { suffix = "-https", listener = "https", proto = "https" }
+    "http"  = { suffix = "-http", listener = "http", proto = null }
+    } : (var.external_tls_termination ? {
+      "https" = { suffix = "", listener = "https", proto = "https" }
+      } : {
+      "default" = { suffix = "", listener = "default", proto = null }
+  })
+
+  grpcroute_resources = merge([
+    for variant_key, variant in local.grpcroute_variants : {
+      for k, v in local.rulesFiltered : "grpcroute-${lower(var.instance_name)}-${k}${variant.suffix}" => {
+        apiVersion = "gateway.networking.k8s.io/v1"
+        kind       = "GRPCRoute"
+        metadata = {
+          name      = "${lower(var.instance_name)}-${k}-grpc${variant.suffix}"
+          namespace = var.environment.namespace
+        }
+        spec = {
+          parentRefs = variant.listener == "https" ? [{
             name        = local.name
             namespace   = var.environment.namespace
             sectionName = "https"
-          }] : (
-            lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
-              # No domain_prefix - use base domain listeners
-              for domain_key, domain in local.domains : {
+            }] : (variant.listener == "http" ? [{
+              name        = local.name
+              namespace   = var.environment.namespace
+              sectionName = "http"
+            }] : (
+            concat(
+              lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
+                for domain_key, domain in local.domains : {
+                  name        = local.name
+                  namespace   = var.environment.namespace
+                  sectionName = "https-${domain_key}"
+                }
+                ] : [
+                for domain_key, domain in local.domains : {
+                  name        = local.name
+                  namespace   = var.environment.namespace
+                  sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
+                }
+              ],
+              !local.force_ssl_redirection ? [{
                 name        = local.name
                 namespace   = var.environment.namespace
-                sectionName = "https-${domain_key}"
+                sectionName = "http"
+              }] : []
+            )
+          ))
+
+          hostnames = distinct([
+            for domain_key, domain in local.domains :
+            lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ?
+            domain.domain :
+            "${lookup(v, "domain_prefix", null)}.${domain.domain}"
+          ])
+
+          rules = [{
+            matches = !lookup(lookup(v, "grpc_config", {}), "match_all_methods", true) && lookup(lookup(v, "grpc_config", {}), "method_match", null) != null ? [
+              for key, method in lookup(v.grpc_config, "method_match", {}) : {
+                method = {
+                  type    = lookup(method, "type", "Exact")
+                  service = lookup(method, "service", "")
+                  method  = lookup(method, "method", "")
+                }
               }
-              ] : [
-              # Has domain_prefix:
-              # - If parent domain has certificate_reference → use wildcard domain listener (*.domain covers subdomains)
-              # - Otherwise → use additional hostname listener
-              for domain_key, domain in local.domains : {
-                name        = local.name
-                namespace   = var.environment.namespace
-                sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
-              }
-            ]
-          ),
-          # Also attach to HTTP listener when SSL redirection is disabled
-          !local.force_ssl_redirection ? [{
-            name        = local.name
-            namespace   = var.environment.namespace
-            sectionName = "http"
-          }] : []
-        )
+            ] : []
 
-        # Include all domains in hostnames - Gateway API supports multiple hostnames per route
-        hostnames = distinct([
-          for domain_key, domain in local.domains :
-          lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ?
-          domain.domain :
-          "${lookup(v, "domain_prefix", null)}.${domain.domain}"
-        ])
+            filters = concat(
+              lookup(var.instance.spec, "basic_auth", false) && !lookup(v, "disable_auth", false) ? [{
+                type = "ExtensionRef"
+                extensionRef = {
+                  group = "gateway.nginx.org"
+                  kind  = "AuthenticationFilter"
+                  name  = "${local.name}-basic-auth"
+                }
+              }] : [],
+              # External TLS proto headers via RequestHeaderModifier (GRPCRoute supports this in Gateway API v1)
+              variant.proto != null ? [{
+                type = "RequestHeaderModifier"
+                requestHeaderModifier = {
+                  set = [
+                    { name = "X-Forwarded-Proto", value = variant.proto },
+                    { name = "X-Forwarded-Scheme", value = variant.proto },
+                    { name = "X-Scheme", value = variant.proto },
+                  ]
+                }
+              }] : []
+            )
 
-        rules = [{
-          # If match_all_methods is true (default) or method_match is empty, match all gRPC traffic
-          matches = !lookup(lookup(v, "grpc_config", {}), "match_all_methods", true) && lookup(lookup(v, "grpc_config", {}), "method_match", null) != null ? [
-            for key, method in lookup(v.grpc_config, "method_match", {}) : {
-              method = {
-                type    = lookup(method, "type", "Exact")
-                service = lookup(method, "service", "")
-                method  = lookup(method, "method", "")
-              }
-            }
-          ] : []
-
-          # Basic auth filter (applied when basic_auth is enabled and route doesn't have disable_auth)
-          filters = lookup(var.instance.spec, "basic_auth", false) && !lookup(v, "disable_auth", false) ? [{
-            type = "ExtensionRef"
-            extensionRef = {
-              group = "gateway.nginx.org"
-              kind  = "AuthenticationFilter"
-              name  = "${local.name}-basic-auth"
-            }
-          }] : []
-
-          backendRefs = [{
-            name      = v.service_name
-            port      = tonumber(v.port)
-            namespace = v.namespace
+            backendRefs = [{
+              name      = v.service_name
+              port      = tonumber(v.port)
+              namespace = v.namespace
+            }]
           }]
-        }]
-      }
-    } if lookup(lookup(v, "grpc_config", {}), "enabled", false)
-  }
+        }
+      } if lookup(lookup(v, "grpc_config", {}), "enabled", false)
+    }
+  ]...)
 
   # PodMonitor (only created when prometheus_details input is provided)
   # Scrapes both control plane and data plane pods using common instance label
@@ -651,16 +699,64 @@ locals {
     }
   } : {}
 
-  # Merge all Gateway API resources
-  gateway_api_resources = merge(
-    local.http_redirect_resources,
-    local.httproute_resources,
-    local.grpcroute_resources,
+  # SnippetsPolicy for X-Request-ID and FACETS-REQUEST-ID headers
+  # These require NGINX variables ($request_id) which cannot be expressed via Gateway API filters.
+  # Only created when external_tls_termination is active (to achieve header parity with ingress-nginx).
+  # Targets the Gateway so it applies to all routes without per-route configuration.
+  snippetspolicy_resources = var.external_tls_termination ? {
+    "snippetspolicy-${local.name}-request-id" = {
+      apiVersion = "gateway.nginx.org/v1alpha1"
+      kind       = "SnippetsPolicy"
+      metadata = {
+        name      = "${local.name}-request-id"
+        namespace = var.environment.namespace
+      }
+      spec = {
+        targetRefs = [{
+          group = "gateway.networking.k8s.io"
+          kind  = "Gateway"
+          name  = local.name
+        }]
+        snippets = [
+          {
+            context = "http.server.location"
+            value   = "proxy_set_header X-Request-ID $request_id;\nproxy_set_header FACETS-REQUEST-ID $request_id;"
+          }
+        ]
+      }
+    }
+  } : {}
+
+  # --- Three Helm release groups ---
+  # Routes are split into separate releases for ordered deployment and clear separation
+  # of HTTPS vs HTTP traffic handling.
+
+  # Release 1: Base infrastructure — everything except HTTPRoutes
+  # Includes: policies, monitors, grants, auth filters, snippets, gRPC routes
+  gateway_api_resources_base = merge(
     local.podmonitor_resources,
     local.referencegrant_resources,
     local.clientsettingspolicy_resources,
-    local.authenticationfilter_resources
+    local.authenticationfilter_resources,
+    local.snippetspolicy_resources,
+    local.grpcroute_resources
   )
+
+  # Release 2: HTTPS HTTPRoutes — routes attached to HTTPS listener(s)
+  # When external_tls_termination + split: only routes with "-https" suffix (or no suffix)
+  # When non-external-TLS: all routes (they carry both listeners in parentRefs)
+  gateway_api_resources_https_routes = {
+    for k, v in local.httproute_resources :
+    k => v if !endswith(k, "-http")
+  }
+
+  # Release 3: HTTP traffic handling
+  # When force_ssl_redirection = true: single blanket redirect rule (301 HTTP → HTTPS)
+  # When force_ssl_redirection = false: HTTP listener HTTPRoutes (the "-http" suffix routes)
+  gateway_api_resources_http_routes = local.force_ssl_redirection ? local.http_redirect_resources : {
+    for k, v in local.httproute_resources :
+    k => v if endswith(k, "-http")
+  }
 }
 
 # Bootstrap TLS Private Key for HTTP-01 validation
@@ -876,7 +972,7 @@ resource "helm_release" "nginx_gateway_fabric" {
         nodeSelector        = local.nodepool_labels
       }
 
-      nginxGateway = {
+      nginxGateway = merge({
         # Configure the GatewayClass name
         gatewayClassName = local.gateway_class_name
 
@@ -918,7 +1014,14 @@ resource "helm_release" "nginx_gateway_fabric" {
         service = {
           labels = local.common_labels
         }
-      }
+        },
+        # Enable SnippetsPolicy support when external TLS termination is active
+        # Required for X-Request-ID and FACETS-REQUEST-ID headers (need NGINX $request_id variable)
+        var.external_tls_termination ? {
+          snippets = {
+            enable = true
+          }
+      } : {})
 
       # NGINX data plane configuration (NginxProxy)
       # Note: The following fields are NOT supported in NginxProxy CRD (NGF 2.3.0):
@@ -1135,16 +1238,47 @@ module "cluster-issuer-gateway-http01" {
 }
 
 # Deploy all Gateway API resources using facets-utility-modules
-module "gateway_api_resources" {
+# Release 1: Base infrastructure — policies, monitors, grants, auth filters, snippets, gRPC routes
+# Deployed first as HTTPS/HTTP routes may depend on these resources (e.g. AuthenticationFilter, SnippetsPolicy)
+module "gateway_api_resources_base" {
   source = "github.com/Facets-cloud/facets-utility-modules//any-k8s-resources"
 
-  name            = "${local.name}-gateway-api"
-  release_name    = "${local.name}-gateway-api"
+  name            = "${local.name}-gateway-api-base"
+  release_name    = "${local.name}-gateway-api-base"
   namespace       = var.environment.namespace
-  resources_data  = local.gateway_api_resources
+  resources_data  = local.gateway_api_resources_base
   advanced_config = {}
 
   depends_on = [helm_release.nginx_gateway_fabric, kubernetes_secret_v1.basic_auth]
+}
+
+# Release 2: HTTPS HTTPRoutes — routes attached to HTTPS listener(s)
+# Contains all routes that serve traffic on port 443 (with X-Forwarded-Proto: https when external TLS)
+module "gateway_api_resources_https_routes" {
+  source = "github.com/Facets-cloud/facets-utility-modules//any-k8s-resources"
+
+  name            = "${local.name}-gateway-api-https"
+  release_name    = "${local.name}-gateway-api-https"
+  namespace       = var.environment.namespace
+  resources_data  = local.gateway_api_resources_https_routes
+  advanced_config = {}
+
+  depends_on = [module.gateway_api_resources_base]
+}
+
+# Release 3: HTTP traffic handling
+# When force_ssl_redirection = true: single blanket redirect rule (301 HTTP → HTTPS)
+# When force_ssl_redirection = false: HTTP listener HTTPRoutes (with X-Forwarded-Proto: http)
+module "gateway_api_resources_http_routes" {
+  source = "github.com/Facets-cloud/facets-utility-modules//any-k8s-resources"
+
+  name            = "${local.name}-gateway-api-http"
+  release_name    = "${local.name}-gateway-api-http"
+  namespace       = var.environment.namespace
+  resources_data  = local.gateway_api_resources_http_routes
+  advanced_config = {}
+
+  depends_on = [module.gateway_api_resources_base]
 }
 
 # Basic Authentication using NGF AuthenticationFilter CRD
