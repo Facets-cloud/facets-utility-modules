@@ -251,11 +251,13 @@ locals {
   # When external TLS termination is active, routes need split variants (one per listener)
   # so that X-Forwarded-Proto can be set correctly per protocol via RequestHeaderModifier.
   # - "https" variant: attached to HTTPS listener, sets proto headers to "https"
-  # - "http" variant: attached to HTTP listener, no proto override needed ($scheme = "http" is correct)
+  # - "http" variant: attached to HTTP listener, sets proto headers to "http"
+  #   (NGF only sets X-Forwarded-Proto by default, not X-Forwarded-Scheme/X-Scheme,
+  #    so we must explicitly set all three on both variants for parity)
   # When external_tls_termination is false, $scheme is accurate and no split/filter is needed.
   httproute_variants = var.external_tls_termination && !local.force_ssl_redirection ? {
     "https" = { suffix = "-https", listener = "https", proto = "https" }
-    "http"  = { suffix = "-http", listener = "http", proto = null }
+    "http"  = { suffix = "-http", listener = "http", proto = "http" }
     } : (var.external_tls_termination ? {
       "https" = { suffix = "", listener = "https", proto = "https" }
       } : {
@@ -489,7 +491,7 @@ locals {
   # GRPCRoute Resources — same split-variant logic as HTTPRoutes for external TLS termination
   grpcroute_variants = var.external_tls_termination && !local.force_ssl_redirection ? {
     "https" = { suffix = "-https", listener = "https", proto = "https" }
-    "http"  = { suffix = "-http", listener = "http", proto = null }
+    "http"  = { suffix = "-http", listener = "http", proto = "http" }
     } : (var.external_tls_termination ? {
       "https" = { suffix = "", listener = "https", proto = "https" }
       } : {
