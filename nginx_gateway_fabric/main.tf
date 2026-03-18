@@ -99,7 +99,8 @@ locals {
 
   # Map of additional hostnames to their config for listeners and certs
   # Subdomains of domains with certificate_reference are excluded — the wildcard listener covers them
-  additional_hostname_configs = {
+  # When external TLS is enabled, all per-domain listeners use wildcard hostnames, so no additional listeners needed
+  additional_hostname_configs = var.external_tls_termination ? {} : {
     for hostname in local.additional_hostnames :
     replace(replace(hostname, ".", "-"), "*", "wildcard") => {
       hostname    = hostname
@@ -144,7 +145,8 @@ locals {
 
   # Domains that need bootstrap TLS certificates for HTTP-01 validation
   # Bootstrap cert is needed for domains without certificate_reference
-  bootstrap_tls_domains = {
+  # Not needed when TLS is terminated externally (e.g., at the NLB)
+  bootstrap_tls_domains = var.external_tls_termination ? {} : {
     for domain_key, domain in local.domains :
     domain_key => domain
     if can(domain.domain) && lookup(domain, "certificate_reference", "") == ""
@@ -152,7 +154,8 @@ locals {
 
   # Domains that need cert-manager to issue certificates
   # Only domains WITHOUT certificate_reference
-  certmanager_managed_domains = {
+  # Not needed when TLS is terminated externally
+  certmanager_managed_domains = var.external_tls_termination ? {} : {
     for domain_key, domain in local.domains :
     domain_key => domain
     if can(domain.domain) && lookup(domain, "certificate_reference", "") == ""
@@ -160,7 +163,8 @@ locals {
 
   # Use gateway-shim only when ALL domains are managed by cert-manager
   # When false (some domains have certificate_reference), we create explicit Certificate resources
-  use_gateway_shim = length(local.certmanager_managed_domains) == length(local.domains)
+  # Never use gateway-shim when TLS is terminated externally
+  use_gateway_shim = !var.external_tls_termination && length(local.certmanager_managed_domains) == length(local.domains)
 
   # Get ClusterIssuer names and config from cert-manager
   cluster_issuer_gateway_http = "${local.name}-gateway-http01"
@@ -254,26 +258,34 @@ locals {
       }
       spec = {
         # Reference the correct listener(s) for this route's hostnames
-        # Routes attach to HTTPS listeners per domain/hostname — TLS always terminates at the Gateway
+        # External TLS mode: all routes reference the single "https" listener
+        # cert-manager mode: routes reference per-domain HTTPS listeners
         # When force_ssl_redirection is disabled, also attach to HTTP listener so traffic is served on port 80
         parentRefs = concat(
-          lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
-            # No domain_prefix - use base domain listeners
-            for domain_key, domain in local.domains : {
-              name        = local.name
-              namespace   = var.environment.namespace
-              sectionName = "https-${domain_key}"
-            }
-            ] : [
-            # Has domain_prefix:
-            # - If parent domain has certificate_reference → use wildcard domain listener (*.domain covers subdomains)
-            # - Otherwise → use additional hostname listener
-            for domain_key, domain in local.domains : {
-              name        = local.name
-              namespace   = var.environment.namespace
-              sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
-            }
-          ],
+          var.external_tls_termination ? [{
+            # External TLS: single listener for all routes
+            name        = local.name
+            namespace   = var.environment.namespace
+            sectionName = "https"
+          }] : (
+            lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
+              # No domain_prefix - use base domain listeners
+              for domain_key, domain in local.domains : {
+                name        = local.name
+                namespace   = var.environment.namespace
+                sectionName = "https-${domain_key}"
+              }
+              ] : [
+              # Has domain_prefix:
+              # - If parent domain has certificate_reference → use wildcard domain listener (*.domain covers subdomains)
+              # - Otherwise → use additional hostname listener
+              for domain_key, domain in local.domains : {
+                name        = local.name
+                namespace   = var.environment.namespace
+                sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
+              }
+            ]
+          ),
           # Also attach to HTTP listener when SSL redirection is disabled
           !local.force_ssl_redirection ? [{
             name        = local.name
@@ -453,25 +465,33 @@ locals {
       }
       spec = {
         # Reference the correct listener(s) for this route's hostnames
-        # Routes attach to HTTPS listeners per domain/hostname — TLS always terminates at the Gateway
+        # External TLS mode: all routes reference the single "https" listener
+        # cert-manager mode: routes reference per-domain HTTPS listeners
         parentRefs = concat(
-          lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
-            # No domain_prefix - use base domain listeners
-            for domain_key, domain in local.domains : {
-              name        = local.name
-              namespace   = var.environment.namespace
-              sectionName = "https-${domain_key}"
-            }
-            ] : [
-            # Has domain_prefix:
-            # - If parent domain has certificate_reference → use wildcard domain listener (*.domain covers subdomains)
-            # - Otherwise → use additional hostname listener
-            for domain_key, domain in local.domains : {
-              name        = local.name
-              namespace   = var.environment.namespace
-              sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
-            }
-          ],
+          var.external_tls_termination ? [{
+            # External TLS: single listener for all routes
+            name        = local.name
+            namespace   = var.environment.namespace
+            sectionName = "https"
+          }] : (
+            lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
+              # No domain_prefix - use base domain listeners
+              for domain_key, domain in local.domains : {
+                name        = local.name
+                namespace   = var.environment.namespace
+                sectionName = "https-${domain_key}"
+              }
+              ] : [
+              # Has domain_prefix:
+              # - If parent domain has certificate_reference → use wildcard domain listener (*.domain covers subdomains)
+              # - Otherwise → use additional hostname listener
+              for domain_key, domain in local.domains : {
+                name        = local.name
+                namespace   = var.environment.namespace
+                sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
+              }
+            ]
+          ),
           # Also attach to HTTP listener when SSL redirection is disabled
           !local.force_ssl_redirection ? [{
             name        = local.name
@@ -1008,48 +1028,56 @@ resource "helm_release" "nginx_gateway_fabric" {
                 }
               }
             }],
-            # HTTPS Listeners per domain — TLS always terminates at the Gateway
-            # When certificate_reference is provided, use wildcard hostname (*.domain) to cover all subdomains
-            # Otherwise use exact hostname and rely on additional hostname listeners for subdomains
-            [for domain_key, domain in local.domains : {
-              name     = "https-${domain_key}"
-              protocol = "HTTPS"
+            # External TLS mode: single HTTP listener on 443, no hostname restriction, no TLS
+            # cert-manager mode: per-domain HTTPS listeners with TLS termination at Gateway
+            var.external_tls_termination ? [{
+              name     = "https"
+              protocol = "HTTP"
               port     = 443
-              hostname = lookup(domain, "certificate_reference", "") != "" ? "*.${domain.domain}" : domain.domain
-              tls = {
-                mode = "Terminate"
-                certificateRefs = [{
-                  kind = "Secret"
-                  # If certificate_reference is provided, use it (custom cert or K8s secret name)
-                  # Otherwise use per-domain bootstrap cert for HTTP-01
-                  name = lookup(domain, "certificate_reference", "") != "" ? domain.certificate_reference : "${local.name}-${domain_key}-tls-cert"
-                }]
-              }
               allowedRoutes = {
                 namespaces = {
                   from = "All"
                 }
               }
-            } if can(domain.domain)],
-            # HTTPS Listeners for additional hostnames
-            [for hostname_key, config in local.additional_hostname_configs : {
-              name     = "https-${hostname_key}"
-              protocol = "HTTPS"
-              port     = 443
-              hostname = config.hostname
-              tls = {
-                mode = "Terminate"
-                certificateRefs = [{
-                  kind = "Secret"
-                  name = config.secret_name
-                }]
-              }
-              allowedRoutes = {
-                namespaces = {
-                  from = "All"
+            }] : concat(
+              [for domain_key, domain in local.domains : {
+                name     = "https-${domain_key}"
+                protocol = "HTTPS"
+                port     = 443
+                hostname = lookup(domain, "certificate_reference", "") != "" ? "*.${domain.domain}" : domain.domain
+                tls = {
+                  mode = "Terminate"
+                  certificateRefs = [{
+                    kind = "Secret"
+                    name = lookup(domain, "certificate_reference", "") != "" ? domain.certificate_reference : "${local.name}-${domain_key}-tls-cert"
+                  }]
                 }
-              }
-            }]
+                allowedRoutes = {
+                  namespaces = {
+                    from = "All"
+                  }
+                }
+              } if can(domain.domain)],
+              # HTTPS Listeners for additional hostnames
+              [for hostname_key, config in local.additional_hostname_configs : {
+                name     = "https-${hostname_key}"
+                protocol = "HTTPS"
+                port     = 443
+                hostname = config.hostname
+                tls = {
+                  mode = "Terminate"
+                  certificateRefs = [{
+                    kind = "Secret"
+                    name = config.secret_name
+                  }]
+                }
+                allowedRoutes = {
+                  namespaces = {
+                    from = "All"
+                  }
+                }
+              }]
+            )
           )
         }
       }]
