@@ -567,13 +567,19 @@ locals {
                 }
               }] : [],
               # External TLS proto headers via RequestHeaderModifier (GRPCRoute supports this in Gateway API v1)
+              # User-specified headers take precedence — same dedup logic as HTTPRoutes
               variant.proto != null ? [{
                 type = "RequestHeaderModifier"
                 requestHeaderModifier = {
                   set = [
-                    { name = "X-Forwarded-Proto", value = variant.proto },
-                    { name = "X-Forwarded-Scheme", value = variant.proto },
-                    { name = "X-Scheme", value = variant.proto },
+                    for h in [
+                      { name = "X-Forwarded-Proto", value = variant.proto },
+                      { name = "X-Forwarded-Scheme", value = variant.proto },
+                      { name = "X-Scheme", value = variant.proto },
+                      ] : h if !contains(
+                      try([for key, header in lookup(lookup(v, "request_header_modifier", {}), "set", {}) : lower(header.name)], []),
+                      lower(h.name)
+                    )
                   ]
                 }
               }] : []
