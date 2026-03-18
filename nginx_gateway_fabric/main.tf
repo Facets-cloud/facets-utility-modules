@@ -1029,7 +1029,6 @@ resource "helm_release" "nginx_gateway_fabric" {
               }
             }],
             # External TLS mode: single HTTP listener on 443, no hostname restriction, no TLS
-            # cert-manager mode: per-domain HTTPS listeners with TLS termination at Gateway
             var.external_tls_termination ? [{
               name     = "https"
               protocol = "HTTP"
@@ -1039,45 +1038,45 @@ resource "helm_release" "nginx_gateway_fabric" {
                   from = "All"
                 }
               }
-            }] : concat(
-              [for domain_key, domain in local.domains : {
-                name     = "https-${domain_key}"
-                protocol = "HTTPS"
-                port     = 443
-                hostname = lookup(domain, "certificate_reference", "") != "" ? "*.${domain.domain}" : domain.domain
-                tls = {
-                  mode = "Terminate"
-                  certificateRefs = [{
-                    kind = "Secret"
-                    name = lookup(domain, "certificate_reference", "") != "" ? domain.certificate_reference : "${local.name}-${domain_key}-tls-cert"
-                  }]
+            }] : [],
+            # cert-manager mode: per-domain HTTPS listeners with TLS termination at Gateway
+            var.external_tls_termination ? [] : [for domain_key, domain in local.domains : {
+              name     = "https-${domain_key}"
+              protocol = "HTTPS"
+              port     = 443
+              hostname = lookup(domain, "certificate_reference", "") != "" ? "*.${domain.domain}" : domain.domain
+              tls = {
+                mode = "Terminate"
+                certificateRefs = [{
+                  kind = "Secret"
+                  name = lookup(domain, "certificate_reference", "") != "" ? domain.certificate_reference : "${local.name}-${domain_key}-tls-cert"
+                }]
+              }
+              allowedRoutes = {
+                namespaces = {
+                  from = "All"
                 }
-                allowedRoutes = {
-                  namespaces = {
-                    from = "All"
-                  }
+              }
+            } if can(domain.domain)],
+            # cert-manager mode: HTTPS Listeners for additional hostnames
+            var.external_tls_termination ? [] : [for hostname_key, config in local.additional_hostname_configs : {
+              name     = "https-${hostname_key}"
+              protocol = "HTTPS"
+              port     = 443
+              hostname = config.hostname
+              tls = {
+                mode = "Terminate"
+                certificateRefs = [{
+                  kind = "Secret"
+                  name = config.secret_name
+                }]
+              }
+              allowedRoutes = {
+                namespaces = {
+                  from = "All"
                 }
-              } if can(domain.domain)],
-              # HTTPS Listeners for additional hostnames
-              [for hostname_key, config in local.additional_hostname_configs : {
-                name     = "https-${hostname_key}"
-                protocol = "HTTPS"
-                port     = 443
-                hostname = config.hostname
-                tls = {
-                  mode = "Terminate"
-                  certificateRefs = [{
-                    kind = "Secret"
-                    name = config.secret_name
-                  }]
-                }
-                allowedRoutes = {
-                  namespaces = {
-                    from = "All"
-                  }
-                }
-              }]
-            )
+              }
+            }]
           )
         }
       }]
