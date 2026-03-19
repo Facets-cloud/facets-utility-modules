@@ -21,7 +21,38 @@ locals {
   tenant_base_domain_id = length(data.aws_route53_zone.base-domain-zone) > 0 ? data.aws_route53_zone.base-domain-zone[0].zone_id : ""
   cloud_provider        = upper(try(var.inputs.kubernetes_details.cloud_provider, "aws"))
 
-  base_helm_values = lookup(var.instance.spec, "helm_values", {})
+  base_helm_values_raw = lookup(var.instance.spec, "helm_values", {})
+
+  # When user provides nginx.service.patches in helm_values, Helm replaces the
+  # entire patches array — losing the module's service annotations patch.
+  # Fix: prepend the module's patch into the user-provided array so both survive.
+  base_helm_values = can(local.base_helm_values_raw.nginx.service.patches) ? merge(
+    local.base_helm_values_raw,
+    {
+      nginx = merge(
+        local.base_helm_values_raw.nginx,
+        {
+          service = merge(
+            local.base_helm_values_raw.nginx.service,
+            {
+              patches = concat(
+                [{
+                  type = "StrategicMerge"
+                  value = {
+                    metadata = {
+                      labels      = local.common_labels
+                      annotations = var.service_annotations
+                    }
+                  }
+                }],
+                local.base_helm_values_raw.nginx.service.patches
+              )
+            }
+          )
+        }
+      )
+    }
+  ) : local.base_helm_values_raw
 
   # Load balancer configuration - determine record type based on what's actually available
   lb_hostname     = try(data.kubernetes_service.gateway_lb.status[0].load_balancer[0].ingress[0].hostname, "")
