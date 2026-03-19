@@ -205,14 +205,6 @@ locals {
   cluster_issuer_override  = lookup(var.instance.spec, "cluster_issuer_override", null)
   effective_cluster_issuer = coalesce(local.cluster_issuer_override, local.cluster_issuer_gateway_http)
 
-  # Security headers (always enabled with sensible defaults)
-  security_headers = {
-    "Strict-Transport-Security" = "max-age=31536000; includeSubDomains"
-    "X-Frame-Options"           = "DENY"
-    "X-Content-Type-Options"    = "nosniff"
-    "X-XSS-Protection"          = "1; mode=block"
-  }
-
   # CORS headers per route
   cors_headers = {
     for k, v in local.rulesFiltered : k => merge(
@@ -438,7 +430,6 @@ locals {
                     responseHeaderModifier = merge(
                       {
                         add = [for name, value in merge(
-                          local.security_headers,
                           { for key, header in lookup(lookup(v, "response_header_modifier", {}), "add", {}) : header.name => header.value },
                           local.cors_headers[k]
                         ) : { name = name, value = value }]
