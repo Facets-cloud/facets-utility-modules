@@ -101,3 +101,9 @@ variable "nginx_proxy_extra_config" {
   default     = {}
   description = "Extra NginxProxy CRD config (e.g. rewriteClientIP for proxy protocol)"
 }
+
+variable "external_tls_termination" {
+  type        = bool
+  default     = false
+  description = "When true, TLS is terminated externally (e.g., at the load balancer). Gateway creates a single HTTP listener on port 443 instead of per-domain HTTPS listeners, and no TLS certificates are created or managed."
+}
