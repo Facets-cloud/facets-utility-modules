@@ -79,7 +79,16 @@ locals {
     }
   }
 
-  domains = merge(lookup(var.instance.spec, "domains", {}), local.add_base_domain)
+  spec_domains = lookup(var.instance.spec, "domains", {})
+  domains      = merge(local.spec_domains, local.add_base_domain)
+
+  # Pre-compute which domain keys have certificate_reference — uses spec_domains only
+  # (known from config) to avoid unknown filter results from base domain's unknown values
+  domains_with_cert = toset([
+    for domain_key, domain in local.spec_domains :
+    domain_key
+    if lookup(domain, "certificate_reference", "") != ""
+  ])
 
   # List of all domain hostnames for HTTPRoutes
   all_domain_hostnames = [for domain_key, domain in local.domains : domain.domain]
@@ -181,12 +190,12 @@ locals {
   # Domains that need bootstrap TLS certificates for HTTP-01 validation
   # Bootstrap cert is needed for domains without certificate_reference
   # Not needed when TLS is terminated externally (e.g., at the NLB)
-  # Condition moved into filter (instead of ternary wrapping the map) to ensure
-  # for_each keys are deterministic at plan time.
+  # Uses domains_with_cert set (derived from spec, always known) instead of
+  # lookup on domain objects which can have unknown values on first apply.
   bootstrap_tls_domains = {
     for domain_key, domain in local.domains :
     domain_key => domain
-    if !var.external_tls_termination && lookup(domain, "certificate_reference", "") == ""
+    if !var.external_tls_termination && !contains(local.domains_with_cert, domain_key)
   }
 
   # Domains that need cert-manager to issue certificates
@@ -195,7 +204,7 @@ locals {
   certmanager_managed_domains = {
     for domain_key, domain in local.domains :
     domain_key => domain
-    if !var.external_tls_termination && lookup(domain, "certificate_reference", "") == ""
+    if !var.external_tls_termination && !contains(local.domains_with_cert, domain_key)
   }
 
   # Use gateway-shim only when ALL domains are managed by cert-manager
