@@ -134,13 +134,14 @@ locals {
   # Only rules with domain_prefix need additional listeners — rules without it use the base domain listener.
   # Subdomains of domains with certificate_reference are excluded — the wildcard listener covers them
   # When external TLS is enabled, all per-domain listeners use wildcard hostnames, so no additional listeners needed
-  additional_hostname_configs = var.external_tls_termination ? {} : {
+  additional_hostname_configs = {
     for rule_key, rule in local.rulesFiltered :
     rule_key => {
       hostname    = rule.host
       secret_name = "${local.name}-${rule_key}-tls-cert"
     }
-    if lookup(rule, "domain_prefix", null) != null && lookup(rule, "domain_prefix", null) != ""
+    if !var.external_tls_termination
+    && lookup(rule, "domain_prefix", null) != null && lookup(rule, "domain_prefix", null) != ""
     && !anytrue([for parent_domain, cert_ref in local.domains_with_cert_ref : endswith(rule.host, ".${parent_domain}")])
   }
 
@@ -180,21 +181,21 @@ locals {
   # Domains that need bootstrap TLS certificates for HTTP-01 validation
   # Bootstrap cert is needed for domains without certificate_reference
   # Not needed when TLS is terminated externally (e.g., at the NLB)
-  # Filter uses only key-existence checks (not value comparisons on unknown fields)
-  # to ensure for_each keys are deterministic at plan time.
-  bootstrap_tls_domains = var.external_tls_termination ? {} : {
+  # Condition moved into filter (instead of ternary wrapping the map) to ensure
+  # for_each keys are deterministic at plan time.
+  bootstrap_tls_domains = {
     for domain_key, domain in local.domains :
     domain_key => domain
-    if lookup(domain, "certificate_reference", "") == ""
+    if !var.external_tls_termination && lookup(domain, "certificate_reference", "") == ""
   }
 
   # Domains that need cert-manager to issue certificates
   # Only domains WITHOUT certificate_reference
   # Not needed when TLS is terminated externally
-  certmanager_managed_domains = var.external_tls_termination ? {} : {
+  certmanager_managed_domains = {
     for domain_key, domain in local.domains :
     domain_key => domain
-    if lookup(domain, "certificate_reference", "") == ""
+    if !var.external_tls_termination && lookup(domain, "certificate_reference", "") == ""
   }
 
   # Use gateway-shim only when ALL domains are managed by cert-manager
