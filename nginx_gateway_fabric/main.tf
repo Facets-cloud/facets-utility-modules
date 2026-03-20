@@ -757,19 +757,110 @@ locals {
     }
   } : {}
 
+  # ClusterIssuer for ACME HTTP-01 challenges via Gateway API
+  # See: https://github.com/cert-manager/cert-manager/issues/7890
+  clusterissuer_resources = length(local.certmanager_managed_domains) > 0 && local.cluster_issuer_override == null ? {
+    "clusterissuer-${local.cluster_issuer_gateway_http}" = {
+      apiVersion = "cert-manager.io/v1"
+      kind       = "ClusterIssuer"
+      metadata = {
+        name = local.cluster_issuer_gateway_http
+      }
+      spec = {
+        acme = {
+          email  = local.acme_email
+          server = "https://acme-v02.api.letsencrypt.org/directory"
+          privateKeySecretRef = {
+            name = "${local.cluster_issuer_gateway_http}-account-key"
+          }
+          solvers = [
+            {
+              http01 = {
+                gatewayHTTPRoute = {
+                  parentRefs = [
+                    {
+                      name        = local.name
+                      namespace   = var.environment.namespace
+                      kind        = "Gateway"
+                      sectionName = "http"
+                    }
+                  ]
+                }
+              }
+            },
+          ]
+        }
+      }
+    }
+  } : {}
+
+  # Certificate resources for HTTP-01 managed base domains
+  # Created when NOT using gateway-shim (i.e., when some domains have certificate_reference)
+  certificate_resources = !local.use_gateway_shim ? {
+    for domain_key, domain in local.certmanager_managed_domains :
+    "certificate-${local.name}-${domain_key}" => {
+      apiVersion = "cert-manager.io/v1"
+      kind       = "Certificate"
+      metadata = {
+        name      = "${local.name}-http01-cert-${domain_key}"
+        namespace = var.environment.namespace
+      }
+      spec = {
+        secretName = "${local.name}-${domain_key}-tls-cert"
+        issuerRef = {
+          name = local.effective_cluster_issuer
+          kind = "ClusterIssuer"
+        }
+        dnsNames = [
+          domain.domain
+        ]
+        renewBefore = lookup(var.instance.spec, "renew_cert_before", "720h")
+      }
+    }
+  } : {}
+
+  # Certificate resources for additional hostnames (domain_prefix + domain)
+  # Only for additional hostnames that don't inherit a parent cert
+  certificate_additional_resources = !local.use_gateway_shim ? {
+    for key, config in local.additional_hostname_configs :
+    "cert-additional-${local.name}-${key}" => {
+      apiVersion = "cert-manager.io/v1"
+      kind       = "Certificate"
+      metadata = {
+        name      = "${local.name}-cert-${key}"
+        namespace = var.environment.namespace
+      }
+      spec = {
+        secretName = config.secret_name
+        issuerRef = {
+          name = local.effective_cluster_issuer
+          kind = "ClusterIssuer"
+        }
+        dnsNames = [
+          config.hostname
+        ]
+        renewBefore = lookup(var.instance.spec, "renew_cert_before", "720h")
+      }
+    }
+  } : {}
+
   # --- Three Helm release groups ---
   # Routes are split into separate releases for ordered deployment and clear separation
   # of HTTPS vs HTTP traffic handling.
 
   # Release 1: Base infrastructure — everything except HTTPRoutes
-  # Includes: policies, monitors, grants, auth filters, snippets, gRPC routes
+  # Includes: policies, monitors, grants, auth filters, snippets, gRPC routes, ClusterIssuer, Certificates
   gateway_api_resources_base = merge(
     local.podmonitor_resources,
     local.referencegrant_resources,
     local.clientsettingspolicy_resources,
     local.authenticationfilter_resources,
     local.snippetspolicy_resources,
-    local.grpcroute_resources
+    local.grpcroute_resources,
+    local.clusterissuer_resources,
+    local.certificate_resources,
+    local.certificate_additional_resources,
+    var.additional_base_resources
   )
 
   # Release 2: HTTPS HTTPRoutes — routes attached to HTTPS listener(s)
@@ -887,92 +978,6 @@ resource "kubernetes_secret_v1" "bootstrap_tls_additional" {
   }
 }
 
-# Explicit Certificate resources for HTTP-01 managed domains
-# Created when NOT using gateway-shim (i.e., when some domains have certificate_reference)
-# For HTTP-01, each domain needs its own Certificate
-module "http01_certificate" {
-  for_each = !local.use_gateway_shim ? local.certmanager_managed_domains : {}
-
-  source          = "github.com/Facets-cloud/facets-utility-modules//any-k8s-resource"
-  name            = "${local.name}-http01-cert-${each.key}"
-  namespace       = var.environment.namespace
-  advanced_config = {}
-
-  data = {
-    apiVersion = "cert-manager.io/v1"
-    kind       = "Certificate"
-    metadata = {
-      name      = "${local.name}-http01-cert-${each.key}"
-      namespace = var.environment.namespace
-    }
-    spec = {
-      secretName = "${local.name}-${each.key}-tls-cert"
-      issuerRef = {
-        name = local.effective_cluster_issuer
-        kind = "ClusterIssuer"
-      }
-      dnsNames = [
-        each.value.domain
-      ]
-      renewBefore = lookup(var.instance.spec, "renew_cert_before", "720h")
-    }
-  }
-
-  depends_on = [
-    helm_release.nginx_gateway_fabric,
-    module.cluster-issuer-gateway-http01
-  ]
-}
-
-# Name module for additional hostname certificates (keeps helm release names under 53 chars)
-# Only created when NOT using gateway-shim and hostname doesn't inherit a parent cert
-module "http01_certificate_additional_name" {
-  for_each = !local.use_gateway_shim ? local.additional_hostname_configs : {}
-
-  source          = "github.com/Facets-cloud/facets-utility-modules//name"
-  environment     = var.environment
-  limit           = 53
-  globally_unique = true
-  resource_name   = "${local.name}-cert-${each.key}"
-  resource_type   = "certificate"
-  is_k8s          = true
-}
-
-# Explicit Certificate resources for additional hostnames (domain_prefix + domain)
-# Only for additional hostnames that don't inherit a parent cert
-module "http01_certificate_additional" {
-  for_each = !local.use_gateway_shim ? local.additional_hostname_configs : {}
-
-  source          = "github.com/Facets-cloud/facets-utility-modules//any-k8s-resource"
-  name            = module.http01_certificate_additional_name[each.key].name
-  namespace       = var.environment.namespace
-  advanced_config = {}
-
-  data = {
-    apiVersion = "cert-manager.io/v1"
-    kind       = "Certificate"
-    metadata = {
-      name      = module.http01_certificate_additional_name[each.key].name
-      namespace = var.environment.namespace
-    }
-    spec = {
-      secretName = each.value.secret_name
-      issuerRef = {
-        name = local.effective_cluster_issuer
-        kind = "ClusterIssuer"
-      }
-      dnsNames = [
-        each.value.hostname
-      ]
-      renewBefore = lookup(var.instance.spec, "renew_cert_before", "720h")
-    }
-  }
-
-  depends_on = [
-    helm_release.nginx_gateway_fabric,
-    module.cluster-issuer-gateway-http01
-  ]
-}
 
 # Helm release name - keep under 63 chars for k8s label limit
 locals {
@@ -1221,50 +1226,6 @@ resource "helm_release" "nginx_gateway_fabric" {
     kubernetes_secret_v1.bootstrap_tls,
     kubernetes_secret_v1.bootstrap_tls_additional
   ]
-}
-
-# Gateway API HTTP-01 ClusterIssuer - bundled here as it requires parentRefs to the Gateway
-# See: https://github.com/cert-manager/cert-manager/issues/7890
-module "cluster-issuer-gateway-http01" {
-  count           = length(local.certmanager_managed_domains) > 0 ? 1 : 0
-  depends_on      = [helm_release.nginx_gateway_fabric]
-  source          = "github.com/Facets-cloud/facets-utility-modules//any-k8s-resource"
-  name            = local.cluster_issuer_gateway_http
-  namespace       = var.environment.namespace
-  advanced_config = {}
-
-  data = {
-    apiVersion = "cert-manager.io/v1"
-    kind       = "ClusterIssuer"
-    metadata = {
-      name = local.cluster_issuer_gateway_http
-    }
-    spec = {
-      acme = {
-        email  = local.acme_email
-        server = "https://acme-v02.api.letsencrypt.org/directory"
-        privateKeySecretRef = {
-          name = "${local.cluster_issuer_gateway_http}-account-key"
-        }
-        solvers = [
-          {
-            http01 = {
-              gatewayHTTPRoute = {
-                parentRefs = [
-                  {
-                    name        = local.name
-                    namespace   = var.environment.namespace
-                    kind        = "Gateway"
-                    sectionName = "http" # Must target HTTP listener for HTTP-01 challenges
-                  }
-                ]
-              }
-            }
-          },
-        ]
-      }
-    }
-  }
 }
 
 # Deploy all Gateway API resources using facets-utility-modules

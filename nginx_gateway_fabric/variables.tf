@@ -107,3 +107,9 @@ variable "external_tls_termination" {
   default     = false
   description = "When true, TLS is terminated externally (e.g., at the load balancer). Gateway creates a single HTTP listener on port 443 instead of per-domain HTTPS listeners, and no TLS certificates are created or managed."
 }
+
+variable "additional_base_resources" {
+  type        = any
+  default     = {}
+  description = "Additional Kubernetes resources to include in the gateway_api_resources_base helm release. Map of resource key => resource object (apiVersion, kind, metadata, spec)."
+}
