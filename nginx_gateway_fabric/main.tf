@@ -759,7 +759,7 @@ locals {
 
   # ClusterIssuer for ACME HTTP-01 challenges via Gateway API
   # See: https://github.com/cert-manager/cert-manager/issues/7890
-  clusterissuer_resources = length(local.certmanager_managed_domains) > 0 ? {
+  clusterissuer_resources = length(local.certmanager_managed_domains) > 0 && local.cluster_issuer_override == null ? {
     "clusterissuer-${local.cluster_issuer_gateway_http}" = {
       apiVersion = "cert-manager.io/v1"
       kind       = "ClusterIssuer"
