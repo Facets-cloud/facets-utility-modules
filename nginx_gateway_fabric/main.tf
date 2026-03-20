@@ -823,7 +823,7 @@ locals {
   # Only for additional hostnames that don't inherit a parent cert
   certificate_additional_resources = !local.use_gateway_shim ? {
     for key, config in local.additional_hostname_configs :
-    "certificate-${local.name}-additional-${key}" => {
+    "cert-additional-${local.name}-${key}" => {
       apiVersion = "cert-manager.io/v1"
       kind       = "Certificate"
       metadata = {
@@ -859,7 +859,8 @@ locals {
     local.grpcroute_resources,
     local.clusterissuer_resources,
     local.certificate_resources,
-    local.certificate_additional_resources
+    local.certificate_additional_resources,
+    var.additional_base_resources
   )
 
   # Release 2: HTTPS HTTPRoutes — routes attached to HTTPS listener(s)
