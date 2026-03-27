@@ -979,9 +979,10 @@ resource "kubernetes_secret_v1" "bootstrap_tls_additional" {
 }
 
 
-# Helm release name - keep under 63 chars for k8s label limit
+# Helm release name - keep under 34 chars so that fullname (release + "-" + chart name = 34+1+20 = 55)
+# plus the longest suffix (-certgen, 8 chars) stays within the 63-char k8s label value limit
 locals {
-  helm_release_name = substr(local.name, 0, min(length(local.name), 63))
+  helm_release_name = substr(local.name, 0, min(length(local.name), 34))
 }
 
 # NGINX Gateway Fabric Helm Chart
