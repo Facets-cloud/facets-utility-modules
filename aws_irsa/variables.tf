@@ -17,3 +17,9 @@ variable "sa_name" {
 variable "eks_oidc_provider_arn" {
   type = string
 }
+
+variable "max_session_duration" {
+  description = "Maximum CLI/API session duration in seconds between 3600 and 43200"
+  type        = number
+  default     = 3600
+}
