@@ -125,3 +125,29 @@ output "tenant_base_domain_id" {
   value       = local.tenant_base_domain_id
   description = "Route53 zone ID for the tenant base domain (empty if not AWS)"
 }
+
+output "legacy_resource_details" {
+  value = concat(
+    lookup(var.instance.spec, "basic_auth", false) ? [{
+      name          = "Basic Authentication Password"
+      value         = local.password
+      resource_type = "ingress"
+      resource_name = var.instance_name
+      key           = var.instance_name
+    }] : [],
+    lookup(var.instance.spec, "disable_base_domain", false) ? [] : [{
+      name          = "Base Domain"
+      value         = local.base_domain
+      resource_type = "ingress"
+      resource_name = var.instance_name
+      key           = var.instance_name
+    }],
+    [for k, v in lookup(var.instance.spec, "rules", {}) : {
+      name          = "ingress domain"
+      value         = lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? local.base_domain : "${lookup(v, "domain_prefix", null)}.${local.base_domain}"
+      resource_type = "ingress_rules_infra"
+      resource_name = k
+      key           = k
+    }]
+  )
+}
