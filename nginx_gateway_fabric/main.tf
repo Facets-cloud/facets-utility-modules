@@ -702,7 +702,7 @@ locals {
           name  = local.name
         }
         body = {
-          maxSize = lookup(var.instance.spec, "body_size", "150m")
+          maxSize = lookup(var.instance.spec, "body_size", "1m")
         }
       }
     }
@@ -729,33 +729,104 @@ locals {
     }
   } : {}
 
-  # SnippetsPolicy for X-Request-ID and FACETS-REQUEST-ID headers
-  # These require NGINX variables ($request_id) which cannot be expressed via Gateway API filters.
-  # Only created when external_tls_termination is active (to achieve header parity with ingress-nginx).
-  # Targets the Gateway so it applies to all routes without per-route configuration.
-  snippetspolicy_resources = var.external_tls_termination ? {
-    "snippetspolicy-${local.name}-request-id" = {
-      apiVersion = "gateway.nginx.org/v1alpha1"
-      kind       = "SnippetsPolicy"
-      metadata = {
-        name      = "${local.name}-request-id"
-        namespace = var.environment.namespace
+  # Resolved instance-level proxy timeouts (defaults to 60s; overrides legacy nginx_ingress_controller's 300s)
+  instance_proxy_connect_timeout = lookup(var.instance.spec, "proxy_connect_timeout", "60s")
+  instance_proxy_read_timeout    = lookup(var.instance.spec, "proxy_read_timeout", "60s")
+  instance_proxy_send_timeout    = lookup(var.instance.spec, "proxy_send_timeout", "60s")
+
+  # SnippetsPolicy resources:
+  # - request-id: X-Request-ID / FACETS-REQUEST-ID injection (external TLS termination only)
+  # - proxy-timeouts (instance-level): proxy_{connect,read,send}_timeout at http.server scope, applies to all routes
+  # - proxy-timeouts (per-rule): rule-level overrides at http.server.location scope, win over instance-level
+  snippetspolicy_resources = merge(
+    var.external_tls_termination ? {
+      "snippetspolicy-${local.name}-request-id" = {
+        apiVersion = "gateway.nginx.org/v1alpha1"
+        kind       = "SnippetsPolicy"
+        metadata = {
+          name      = "${local.name}-request-id"
+          namespace = var.environment.namespace
+        }
+        spec = {
+          targetRefs = [{
+            group = "gateway.networking.k8s.io"
+            kind  = "Gateway"
+            name  = local.name
+          }]
+          snippets = [
+            {
+              context = "http.server.location"
+              value   = "proxy_set_header X-Request-ID $request_id;\nproxy_set_header FACETS-REQUEST-ID $request_id;"
+            }
+          ]
+        }
       }
-      spec = {
-        targetRefs = [{
-          group = "gateway.networking.k8s.io"
-          kind  = "Gateway"
-          name  = local.name
-        }]
-        snippets = [
-          {
-            context = "http.server.location"
-            value   = "proxy_set_header X-Request-ID $request_id;\nproxy_set_header FACETS-REQUEST-ID $request_id;"
+    } : {},
+    {
+      "snippetspolicy-${local.name}-proxy-timeouts" = {
+        apiVersion = "gateway.nginx.org/v1alpha1"
+        kind       = "SnippetsPolicy"
+        metadata = {
+          name      = "${local.name}-proxy-timeouts"
+          namespace = var.environment.namespace
+        }
+        spec = {
+          targetRefs = [{
+            group = "gateway.networking.k8s.io"
+            kind  = "Gateway"
+            name  = local.name
+          }]
+          snippets = [
+            {
+              context = "http.server"
+              value = join("\n", [
+                "proxy_connect_timeout ${local.instance_proxy_connect_timeout};",
+                "proxy_read_timeout ${local.instance_proxy_read_timeout};",
+                "proxy_send_timeout ${local.instance_proxy_send_timeout};",
+              ])
+            }
+          ]
+        }
+      }
+    },
+    merge([
+      for variant_key, variant in local.httproute_variants : {
+        for k, v in local.rulesFiltered :
+        "snippetspolicy-${lower(var.instance_name)}-${k}${variant.suffix}-proxy-timeouts" => {
+          apiVersion = "gateway.nginx.org/v1alpha1"
+          kind       = "SnippetsPolicy"
+          metadata = {
+            name      = "${lower(var.instance_name)}-${k}${variant.suffix}-proxy-timeouts"
+            namespace = var.environment.namespace
           }
-        ]
+          spec = {
+            targetRefs = [{
+              group = "gateway.networking.k8s.io"
+              kind  = "HTTPRoute"
+              name  = "${lower(var.instance_name)}-${k}${variant.suffix}"
+            }]
+            snippets = [
+              {
+                context = "http.server.location"
+                value = join("\n", compact([
+                  lookup(lookup(v, "nginx_timeouts", {}), "proxy_connect_timeout", null) != null ?
+                  "proxy_connect_timeout ${v.nginx_timeouts.proxy_connect_timeout};" : null,
+                  lookup(lookup(v, "nginx_timeouts", {}), "proxy_read_timeout", null) != null ?
+                  "proxy_read_timeout ${v.nginx_timeouts.proxy_read_timeout};" : null,
+                  lookup(lookup(v, "nginx_timeouts", {}), "proxy_send_timeout", null) != null ?
+                  "proxy_send_timeout ${v.nginx_timeouts.proxy_send_timeout};" : null,
+                ]))
+              }
+            ]
+          }
+        }
+        if lookup(v, "nginx_timeouts", null) != null && length([
+          for kk in ["proxy_connect_timeout", "proxy_read_timeout", "proxy_send_timeout"] :
+          kk if lookup(v.nginx_timeouts, kk, null) != null
+        ]) > 0 && !lookup(lookup(v, "grpc_config", {}), "enabled", false)
       }
-    }
-  } : {}
+    ]...)
+  )
 
   # ClusterIssuer for ACME HTTP-01 challenges via Gateway API
   # See: https://github.com/cert-manager/cert-manager/issues/7890
