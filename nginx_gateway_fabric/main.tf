@@ -981,10 +981,22 @@ resource "kubernetes_secret_v1" "bootstrap_tls_additional" {
 
 # Helm release name - keep under 34 chars so that fullname (release + "-" + chart name = 34+1+20 = 55)
 # plus the longest suffix (-certgen, 8 chars) stays within the 63-char k8s label value limit.
-# spec.helm_release_name_override (when non-empty) takes precedence; otherwise the legacy truncated-name behavior is preserved.
+#
+# spec.helm_release_name_override is honored only when it normalizes to a valid Helm release name:
+#   - trimmed of leading/trailing whitespace
+#   - non-empty after trimming (null, missing, or whitespace-only treated as absent)
+#   - ≤ 34 characters (preserves the 63-char label budget described above)
+#   - DNS-1123 label: lowercase alphanumeric and hyphens, starting/ending with alphanumeric
+# Anything else silently falls back to the legacy truncated-name default. Form-level validation
+# in each parent's facets.yaml rejects bad input at the UI layer; this is defense-in-depth.
 locals {
-  helm_release_name_override_raw = lookup(var.instance.spec, "helm_release_name_override", "")
-  helm_release_name              = local.helm_release_name_override_raw != "" ? local.helm_release_name_override_raw : substr(local.name, 0, min(length(local.name), 34))
+  helm_release_name_override_raw = try(trimspace(tostring(var.instance.spec.helm_release_name_override)), "")
+  helm_release_name_override_valid = (
+    local.helm_release_name_override_raw != "" &&
+    length(local.helm_release_name_override_raw) <= 34 &&
+    can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", local.helm_release_name_override_raw))
+  ) ? local.helm_release_name_override_raw : ""
+  helm_release_name = local.helm_release_name_override_valid != "" ? local.helm_release_name_override_valid : substr(local.name, 0, min(length(local.name), 34))
 }
 
 # NGINX Gateway Fabric Helm Chart
