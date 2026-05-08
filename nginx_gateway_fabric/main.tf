@@ -980,9 +980,11 @@ resource "kubernetes_secret_v1" "bootstrap_tls_additional" {
 
 
 # Helm release name - keep under 34 chars so that fullname (release + "-" + chart name = 34+1+20 = 55)
-# plus the longest suffix (-certgen, 8 chars) stays within the 63-char k8s label value limit
+# plus the longest suffix (-certgen, 8 chars) stays within the 63-char k8s label value limit.
+# spec.helm_release_name_override (when non-empty) takes precedence; otherwise the legacy truncated-name behavior is preserved.
 locals {
-  helm_release_name = substr(local.name, 0, min(length(local.name), 34))
+  helm_release_name_override_raw = lookup(var.instance.spec, "helm_release_name_override", "")
+  helm_release_name              = local.helm_release_name_override_raw != "" ? local.helm_release_name_override_raw : substr(local.name, 0, min(length(local.name), 34))
 }
 
 # NGINX Gateway Fabric Helm Chart
@@ -1312,9 +1314,10 @@ data "kubernetes_service" "gateway_lb" {
     helm_release.nginx_gateway_fabric
   ]
   metadata {
-    # Service is created by controller with pattern: <release-name>-<gateway-name>
-    # Since both release name and gateway name are local.name, it becomes: <name>-<name>
-    name      = "${local.name}-${local.name}"
+    # Service is created by controller with pattern: <release-name>-<gateway-name>.
+    # Use helm_release_name (which honors the override and the 34-char fallback truncation)
+    # so the lookup matches the controller-created service even when name > 34 chars or an override is set.
+    name      = "${local.helm_release_name}-${local.name}"
     namespace = var.environment.namespace
   }
 }
