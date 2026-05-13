@@ -737,7 +737,6 @@ locals {
   # SnippetsPolicy resources:
   # - request-id: X-Request-ID / FACETS-REQUEST-ID injection (external TLS termination only)
   # - proxy-timeouts (instance-level): proxy_{connect,read,send}_timeout at http.server scope, applies to all routes
-  # - proxy-timeouts (per-rule): rule-level overrides at http.server.location scope, win over instance-level
   snippetspolicy_resources = merge(
     var.external_tls_termination ? {
       "snippetspolicy-${local.name}-request-id" = {
@@ -789,43 +788,6 @@ locals {
         }
       }
     },
-    merge([
-      for variant_key, variant in local.httproute_variants : {
-        for k, v in local.rulesFiltered :
-        "snippetspolicy-${lower(var.instance_name)}-${k}${variant.suffix}-proxy-timeouts" => {
-          apiVersion = "gateway.nginx.org/v1alpha1"
-          kind       = "SnippetsPolicy"
-          metadata = {
-            name      = "${lower(var.instance_name)}-${k}${variant.suffix}-proxy-timeouts"
-            namespace = var.environment.namespace
-          }
-          spec = {
-            targetRefs = [{
-              group = "gateway.networking.k8s.io"
-              kind  = "HTTPRoute"
-              name  = "${lower(var.instance_name)}-${k}${variant.suffix}"
-            }]
-            snippets = [
-              {
-                context = "http.server.location"
-                value = join("\n", compact([
-                  lookup(lookup(v, "nginx_timeouts", {}), "proxy_connect_timeout", null) != null ?
-                  "proxy_connect_timeout ${v.nginx_timeouts.proxy_connect_timeout};" : null,
-                  lookup(lookup(v, "nginx_timeouts", {}), "proxy_read_timeout", null) != null ?
-                  "proxy_read_timeout ${v.nginx_timeouts.proxy_read_timeout};" : null,
-                  lookup(lookup(v, "nginx_timeouts", {}), "proxy_send_timeout", null) != null ?
-                  "proxy_send_timeout ${v.nginx_timeouts.proxy_send_timeout};" : null,
-                ]))
-              }
-            ]
-          }
-        }
-        if lookup(v, "nginx_timeouts", null) != null && length([
-          for kk in ["proxy_connect_timeout", "proxy_read_timeout", "proxy_send_timeout"] :
-          kk if lookup(v.nginx_timeouts, kk, null) != null
-        ]) > 0 && !lookup(lookup(v, "grpc_config", {}), "enabled", false)
-      }
-    ]...)
   )
 
   # ClusterIssuer for ACME HTTP-01 challenges via Gateway API
