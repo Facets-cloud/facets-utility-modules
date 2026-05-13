@@ -1359,10 +1359,11 @@ data "kubernetes_service" "gateway_lb" {
     helm_release.nginx_gateway_fabric
   ]
   metadata {
-    # Service is created by controller with pattern: <release-name>-<gateway-name>.
-    # Use helm_release_name (which honors the override and the 34-char fallback truncation)
-    # so the lookup matches the controller-created service even when name > 34 chars or an override is set.
-    name      = "${local.helm_release_name}-${local.name}"
+    # NGF controller creates the data-plane LoadBalancer Service named after the
+    # Gateway resource itself with the pattern: <gateway-name>-<gateway-name>.
+    # This is independent of the helm release name (so helm_release_name_override
+    # does NOT affect this lookup).
+    name      = "${local.name}-${local.name}"
     namespace = var.environment.namespace
   }
 }
