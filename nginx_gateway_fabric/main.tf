@@ -1339,19 +1339,14 @@ resource "kubernetes_secret_v1" "basic_auth" {
     namespace = var.environment.namespace
   }
 
-  # NGF's AuthenticationFilter reads the htpasswd payload from `data.htpasswd`.
-  # The legacy `data.auth` key is the nginx_ingress_controller convention and is silently
-  # ignored by NGF, producing 401 for every request.
   data = {
-    htpasswd = "${var.instance_name}user:${bcrypt(random_string.basic_auth_password[0].result)}"
+    auth = "${var.instance_name}user:${bcrypt(random_string.basic_auth_password[0].result)}"
   }
 
   type = "nginx.org/htpasswd"
 
   lifecycle {
-    # `data` is NOT ignored — bcrypt() is non-deterministic so the stored hash rotates
-    # on each apply, but it still validates the same plaintext (random_string is stable).
-    # Letting it churn ensures a stuck/legacy-shape secret gets rewritten on next apply.
+    ignore_changes        = [data]
     create_before_destroy = true
   }
 }
