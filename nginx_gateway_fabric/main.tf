@@ -702,7 +702,7 @@ locals {
           name  = local.name
         }
         body = {
-          maxSize = lookup(var.instance.spec, "body_size", "150m")
+          maxSize = lookup(var.instance.spec, "body_size", "1m")
         }
       }
     }
@@ -729,33 +729,66 @@ locals {
     }
   } : {}
 
-  # SnippetsPolicy for X-Request-ID and FACETS-REQUEST-ID headers
-  # These require NGINX variables ($request_id) which cannot be expressed via Gateway API filters.
-  # Only created when external_tls_termination is active (to achieve header parity with ingress-nginx).
-  # Targets the Gateway so it applies to all routes without per-route configuration.
-  snippetspolicy_resources = var.external_tls_termination ? {
-    "snippetspolicy-${local.name}-request-id" = {
-      apiVersion = "gateway.nginx.org/v1alpha1"
-      kind       = "SnippetsPolicy"
-      metadata = {
-        name      = "${local.name}-request-id"
-        namespace = var.environment.namespace
+  # Resolved instance-level proxy timeouts (defaults to 60s; overrides legacy nginx_ingress_controller's 300s)
+  instance_proxy_connect_timeout = lookup(var.instance.spec, "proxy_connect_timeout", "60s")
+  instance_proxy_read_timeout    = lookup(var.instance.spec, "proxy_read_timeout", "60s")
+  instance_proxy_send_timeout    = lookup(var.instance.spec, "proxy_send_timeout", "60s")
+
+  # SnippetsPolicy resources:
+  # - request-id: X-Request-ID / FACETS-REQUEST-ID injection (external TLS termination only)
+  # - proxy-timeouts (instance-level): proxy_{connect,read,send}_timeout at http.server scope, applies to all routes
+  snippetspolicy_resources = merge(
+    var.external_tls_termination ? {
+      "snippetspolicy-${local.name}-request-id" = {
+        apiVersion = "gateway.nginx.org/v1alpha1"
+        kind       = "SnippetsPolicy"
+        metadata = {
+          name      = "${local.name}-request-id"
+          namespace = var.environment.namespace
+        }
+        spec = {
+          targetRefs = [{
+            group = "gateway.networking.k8s.io"
+            kind  = "Gateway"
+            name  = local.name
+          }]
+          snippets = [
+            {
+              context = "http.server.location"
+              value   = "proxy_set_header X-Request-ID $request_id;\nproxy_set_header FACETS-REQUEST-ID $request_id;"
+            }
+          ]
+        }
       }
-      spec = {
-        targetRefs = [{
-          group = "gateway.networking.k8s.io"
-          kind  = "Gateway"
-          name  = local.name
-        }]
-        snippets = [
-          {
-            context = "http.server.location"
-            value   = "proxy_set_header X-Request-ID $request_id;\nproxy_set_header FACETS-REQUEST-ID $request_id;"
-          }
-        ]
+    } : {},
+    {
+      "snippetspolicy-${local.name}-proxy-timeouts" = {
+        apiVersion = "gateway.nginx.org/v1alpha1"
+        kind       = "SnippetsPolicy"
+        metadata = {
+          name      = "${local.name}-proxy-timeouts"
+          namespace = var.environment.namespace
+        }
+        spec = {
+          targetRefs = [{
+            group = "gateway.networking.k8s.io"
+            kind  = "Gateway"
+            name  = local.name
+          }]
+          snippets = [
+            {
+              context = "http.server"
+              value = join("\n", [
+                "proxy_connect_timeout ${local.instance_proxy_connect_timeout};",
+                "proxy_read_timeout ${local.instance_proxy_read_timeout};",
+                "proxy_send_timeout ${local.instance_proxy_send_timeout};",
+              ])
+            }
+          ]
+        }
       }
-    }
-  } : {}
+    },
+  )
 
   # ClusterIssuer for ACME HTTP-01 challenges via Gateway API
   # See: https://github.com/cert-manager/cert-manager/issues/7890
@@ -980,9 +1013,23 @@ resource "kubernetes_secret_v1" "bootstrap_tls_additional" {
 
 
 # Helm release name - keep under 34 chars so that fullname (release + "-" + chart name = 34+1+20 = 55)
-# plus the longest suffix (-certgen, 8 chars) stays within the 63-char k8s label value limit
+# plus the longest suffix (-certgen, 8 chars) stays within the 63-char k8s label value limit.
+#
+# spec.helm_release_name_override is honored only when it normalizes to a valid Helm release name:
+#   - trimmed of leading/trailing whitespace
+#   - non-empty after trimming (null, missing, or whitespace-only treated as absent)
+#   - ≤ 34 characters (preserves the 63-char label budget described above)
+#   - DNS-1123 label: lowercase alphanumeric and hyphens, starting/ending with alphanumeric
+# Anything else silently falls back to the legacy truncated-name default. Form-level validation
+# in each parent's facets.yaml rejects bad input at the UI layer; this is defense-in-depth.
 locals {
-  helm_release_name = substr(local.name, 0, min(length(local.name), 34))
+  helm_release_name_override_raw = try(trimspace(tostring(var.instance.spec.helm_release_name_override)), "")
+  helm_release_name_override_valid = (
+    local.helm_release_name_override_raw != "" &&
+    length(local.helm_release_name_override_raw) <= 34 &&
+    can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", local.helm_release_name_override_raw))
+  ) ? local.helm_release_name_override_raw : ""
+  helm_release_name = local.helm_release_name_override_valid != "" ? local.helm_release_name_override_valid : substr(local.name, 0, min(length(local.name), 34))
 }
 
 # NGINX Gateway Fabric Helm Chart
@@ -1312,8 +1359,10 @@ data "kubernetes_service" "gateway_lb" {
     helm_release.nginx_gateway_fabric
   ]
   metadata {
-    # Service is created by controller with pattern: <release-name>-<gateway-name>
-    # Since both release name and gateway name are local.name, it becomes: <name>-<name>
+    # NGF controller creates the data-plane LoadBalancer Service named after the
+    # Gateway resource itself with the pattern: <gateway-name>-<gateway-name>.
+    # This is independent of the helm release name (so helm_release_name_override
+    # does NOT affect this lookup).
     name      = "${local.name}-${local.name}"
     namespace = var.environment.namespace
   }
