@@ -1,5 +1,70 @@
 {{- if eq .Values.spec.type "application" }}
 {{- if hasKey .Values.advanced.common.app_chart.values "keda" }}
+{{- if eq ((.Values.advanced.common.app_chart.values.keda.scaler_type) | default "ScaledObject") "ScaledJob" }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: {{ include "app-chart.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "app-chart.metadataLabels" . | nindent 4 }}
+spec:
+  jobTargetRef:
+    parallelism: 1
+    completions: 1
+    backoffLimit: {{ .Values.advanced.common.app_chart.values.keda.job_backoff_limit | default 0 }}
+    template:
+      metadata:
+        labels:
+          {{- include "app-chart.metadataLabels" . | nindent 10 }}
+        {{- if ( hasKey .Values.metadata "annotations" ) }}
+        annotations:
+          {{- include "app-chart.metadataAnnotations" . | nindent 10 }}
+        {{- end }}
+      spec:
+        restartPolicy: Never
+        serviceAccountName: {{ .Values.advanced.common.app_chart.values.service_account_name | default (printf "%s-sa" (include "app-chart.fullname" .)) }}
+        {{- if ( hasKey .Values.advanced.common.app_chart.values "tolerations") }}
+        {{- include "app-chart.tolerations" . | indent 8 -}}
+        {{- end }}
+        {{- if ( hasKey .Values.advanced.common.app_chart.values "node_selector") }}
+        {{- with .Values.advanced.common.app_chart.values.node_selector }}
+        nodeSelector:
+          {{- toYaml . | nindent 10 -}}
+        {{- end }}
+        {{- end }}
+        {{- if ( hasKey .Values.advanced.common.app_chart.values "image_pull_secrets") }}
+        {{- if gt (len .Values.advanced.common.app_chart.values.image_pull_secrets) 0 }}
+        imagePullSecrets:
+        {{- include "app-chart.imagePullSecrets" . | indent 8 }}
+        {{- end }}
+        {{- end }}
+        containers:
+        - name: {{ include "app-chart.fullname" . }}
+          image: {{ .Values.spec.runtime.image | default .Values.spec.release.image }}
+          imagePullPolicy: {{ .Values.spec.release.image_pull_policy | default "IfNotPresent" }}
+          {{- if hasKey .Values.spec.runtime "command" }}
+          {{- if gt (len .Values.spec.runtime.command) 0 }}
+          {{- include "app-chart.command" . | nindent 10 }}
+          {{- end }}
+          {{- end }}
+          {{- if hasKey .Values.spec.runtime "args" }}
+          {{- if gt (len .Values.spec.runtime.args) 0 }}
+          {{- include "app-chart.args" . | nindent 10 }}
+          {{- end }}
+          {{- end }}
+          env:
+          {{- include "app-chart.env" . | indent 10 }}
+          {{- include "app-chart.envFrom" . | indent 10 }}
+          resources:
+          {{- include "app-chart.resources" . | indent 12 }}
+  pollingInterval: {{ .Values.advanced.common.app_chart.values.keda.polling_interval | default 30 }}
+  successfulJobsHistoryLimit: {{ .Values.advanced.common.app_chart.values.keda.successful_jobs_history_limit | default 0 }}
+  failedJobsHistoryLimit: {{ .Values.advanced.common.app_chart.values.keda.failed_jobs_history_limit | default 5 }}
+  maxReplicaCount: {{ .Values.spec.runtime.autoscaling.max | default 10 }}
+  triggers:
+  {{- .Values.advanced.common.app_chart.values.keda.triggers | toYaml | nindent 2 }}
+{{- else }}
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -40,5 +105,6 @@ spec:
 {{- end }}
   triggers:
 {{- .Values.advanced.common.app_chart.values.keda.triggers | toYaml | nindent 2 }}
+{{- end }}
 {{- end }}
 {{- end }}
