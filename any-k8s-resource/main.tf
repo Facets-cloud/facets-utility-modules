@@ -8,7 +8,7 @@ resource "helm_release" "k8s-resource" {
   wait             = lookup(var.advanced_config, "wait", false)
   max_history      = lookup(var.advanced_config, "max_history", 10)
   version          = "0.1.0"
-  create_namespace = true
+  create_namespace = lookup(var.advanced_config, "create_namespace", true)
   namespace        = var.namespace
   values = [
     yamlencode({
