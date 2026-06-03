@@ -482,12 +482,10 @@ locals {
               ]
             )
 
-            # Request/backend timeouts - default 300s (equivalent to proxy-read-timeout/proxy-send-timeout)
-            timeouts = {
-              request        = lookup(lookup(v, "timeouts", {}), "request", "300s")
-              backendRequest = lookup(lookup(v, "timeouts", {}), "backend_request", "300s")
-            }
-
+            # NOTE: HTTPRoute.spec.rules[].timeouts intentionally omitted — NGF 2.4.1
+            # ignores it (Gateway API compat / nginx/nginx-gateway-fabric#2164). Per-rule
+            # request/backend timeouts are a no-op here; gateway-wide proxy_*_timeout is
+            # applied via the proxy-timeouts SnippetsPolicy instead.
             backendRefs = concat(
               # Primary backend
               [{
@@ -702,7 +700,7 @@ locals {
           name  = local.name
         }
         body = {
-          maxSize = lookup(var.instance.spec, "body_size", "1m")
+          maxSize = lookup(var.instance.spec, "body_size", "150m")
         }
       }
     }
@@ -1098,9 +1096,11 @@ resource "helm_release" "nginx_gateway_fabric" {
           labels = local.common_labels
         }
         },
-        # Enable SnippetsPolicy support when external TLS termination is active
-        # Required for X-Request-ID and FACETS-REQUEST-ID headers (need NGINX $request_id variable)
-        var.external_tls_termination ? {
+        # Enable SnippetsPolicy support whenever any SnippetsPolicy is emitted.
+        # The proxy-timeouts policy is emitted unconditionally and the request-id
+        # policy is added under external TLS termination; both are silently ignored
+        # by NGF unless the controller runs with --snippets (helm: nginxGateway.snippets.enable).
+        length(local.snippetspolicy_resources) > 0 ? {
           snippets = {
             enable = true
           }
