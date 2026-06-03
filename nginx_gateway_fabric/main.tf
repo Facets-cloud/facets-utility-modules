@@ -479,13 +479,23 @@ locals {
                     } : {}
                   )
                 }
-              ]
+              ],
+              # Per-rule SnippetsFilter ExtensionRef (nginx_timeouts) — ported from
+              # nginx_gateway_fabric_capillary. Applies proxy_*_timeout at http.server.location,
+              # overriding the gateway-wide proxy-timeouts default for this route.
+              contains(keys(local.rules_needing_snippetsfilter), k) ? [{
+                type = "ExtensionRef"
+                extensionRef = {
+                  group = "gateway.nginx.org"
+                  kind  = "SnippetsFilter"
+                  name  = local.rule_snippet_names[k]
+                }
+              }] : []
             )
 
-            # NOTE: HTTPRoute.spec.rules[].timeouts intentionally omitted — NGF 2.4.1
-            # ignores it (Gateway API compat / nginx/nginx-gateway-fabric#2164). Per-rule
-            # request/backend timeouts are a no-op here; gateway-wide proxy_*_timeout is
-            # applied via the proxy-timeouts SnippetsPolicy instead.
+            # NOTE: Gateway-API HTTPRoute rules[].timeouts is still omitted — NGF 2.4.1
+            # ignores it (#2164). Per-rule proxy_*_timeout is delivered via nginx_timeouts
+            # (SnippetsFilter ExtensionRef above); gateway-wide default via proxy-timeouts SnippetsPolicy.
             backendRefs = concat(
               # Primary backend
               [{
@@ -601,6 +611,15 @@ locals {
                       lower(h.name)
                     )
                   ]
+                }
+              }] : [],
+              # Per-rule SnippetsFilter ExtensionRef (nginx_timeouts) — gRPC routes
+              contains(keys(local.rules_needing_snippetsfilter), k) ? [{
+                type = "ExtensionRef"
+                extensionRef = {
+                  group = "gateway.nginx.org"
+                  kind  = "SnippetsFilter"
+                  name  = local.rule_snippet_names[k]
                 }
               }] : []
             )
@@ -727,10 +746,12 @@ locals {
     }
   } : {}
 
-  # Resolved instance-level proxy timeouts (defaults to 60s; overrides legacy nginx_ingress_controller's 300s)
-  instance_proxy_connect_timeout = lookup(var.instance.spec, "proxy_connect_timeout", "60s")
-  instance_proxy_read_timeout    = lookup(var.instance.spec, "proxy_read_timeout", "60s")
-  instance_proxy_send_timeout    = lookup(var.instance.spec, "proxy_send_timeout", "60s")
+  # Resolved instance-level proxy timeouts. Default 300s = parity with legacy
+  # nginx_ingress_controller. Applied gateway-wide via the proxy-timeouts SnippetsPolicy
+  # (http.server); per-rule nginx_timeouts (SnippetsFilter, http.server.location) overrides per route.
+  instance_proxy_connect_timeout = lookup(var.instance.spec, "proxy_connect_timeout", "300s")
+  instance_proxy_read_timeout    = lookup(var.instance.spec, "proxy_read_timeout", "300s")
+  instance_proxy_send_timeout    = lookup(var.instance.spec, "proxy_send_timeout", "300s")
 
   # SnippetsPolicy resources:
   # - request-id: X-Request-ID / FACETS-REQUEST-ID injection (external TLS termination only)
@@ -787,6 +808,48 @@ locals {
       }
     },
   )
+
+  # Per-rule SnippetsFilter names — referenced by both the SnippetsFilter resource and
+  # the HTTPRoute/GRPCRoute ExtensionRef so the names always match.
+  rule_snippet_names = {
+    for k, v in local.rulesFiltered :
+    k => "${local.name}-${lower(replace(replace(replace(k, "_", "-"), ".", "-"), "/", "-"))}-snippets"
+  }
+
+  # Rules that need a per-rule SnippetsFilter (per-rule nginx_timeouts overrides).
+  rules_needing_snippetsfilter = {
+    for k, v in local.rulesFiltered : k => true
+    if lookup(v, "nginx_timeouts", null) != null
+  }
+
+  # SnippetsFilter resources — per-rule proxy_{connect,read,send}_timeout rendered at
+  # http.server.location, overriding the gateway-wide default for that route. Ported from
+  # nginx_gateway_fabric_capillary; wired onto each route via ExtensionRef (HTTP + gRPC).
+  snippetsfilter_resources = {
+    for k, v in local.rulesFiltered :
+    "snippetsfilter-${k}" => {
+      apiVersion = "gateway.nginx.org/v1alpha1"
+      kind       = "SnippetsFilter"
+      metadata = {
+        name      = local.rule_snippet_names[k]
+        namespace = var.environment.namespace
+      }
+      spec = {
+        snippets = [{
+          context = "http.server.location"
+          value = join("\n", compact([
+            lookup(lookup(v, "nginx_timeouts", {}), "proxy_connect_timeout", null) != null ?
+            "proxy_connect_timeout ${v.nginx_timeouts.proxy_connect_timeout};" : null,
+            lookup(lookup(v, "nginx_timeouts", {}), "proxy_read_timeout", null) != null ?
+            "proxy_read_timeout ${v.nginx_timeouts.proxy_read_timeout};" : null,
+            lookup(lookup(v, "nginx_timeouts", {}), "proxy_send_timeout", null) != null ?
+            "proxy_send_timeout ${v.nginx_timeouts.proxy_send_timeout};" : null,
+          ]))
+        }]
+      }
+    }
+    if lookup(v, "nginx_timeouts", null) != null
+  }
 
   # ClusterIssuer for ACME HTTP-01 challenges via Gateway API
   # See: https://github.com/cert-manager/cert-manager/issues/7890
@@ -887,6 +950,7 @@ locals {
     local.clientsettingspolicy_resources,
     local.authenticationfilter_resources,
     local.snippetspolicy_resources,
+    local.snippetsfilter_resources,
     local.grpcroute_resources,
     local.clusterissuer_resources,
     local.certificate_resources,
@@ -1096,11 +1160,11 @@ resource "helm_release" "nginx_gateway_fabric" {
           labels = local.common_labels
         }
         },
-        # Enable SnippetsPolicy support whenever any SnippetsPolicy is emitted.
-        # The proxy-timeouts policy is emitted unconditionally and the request-id
-        # policy is added under external TLS termination; both are silently ignored
-        # by NGF unless the controller runs with --snippets (helm: nginxGateway.snippets.enable).
-        length(local.snippetspolicy_resources) > 0 ? {
+        # Enable snippets support whenever any SnippetsPolicy or SnippetsFilter is emitted.
+        # The proxy-timeouts SnippetsPolicy is emitted unconditionally, so this is effectively
+        # always on. The same nginxGateway.snippets.enable flag is required by NGF for BOTH
+        # SnippetsPolicy (gateway-level) and SnippetsFilter (per-rule nginx_timeouts) to render.
+        length(local.snippetspolicy_resources) > 0 || length(local.snippetsfilter_resources) > 0 ? {
           snippets = {
             enable = true
           }
