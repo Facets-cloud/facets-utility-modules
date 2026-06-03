@@ -746,12 +746,13 @@ locals {
     }
   } : {}
 
-  # Resolved instance-level proxy timeouts. Default 300s = parity with legacy
-  # nginx_ingress_controller. Applied gateway-wide via the proxy-timeouts SnippetsPolicy
-  # (http.server); per-rule nginx_timeouts (SnippetsFilter, http.server.location) overrides per route.
-  instance_proxy_connect_timeout = lookup(var.instance.spec, "proxy_connect_timeout", "300s")
-  instance_proxy_read_timeout    = lookup(var.instance.spec, "proxy_read_timeout", "300s")
-  instance_proxy_send_timeout    = lookup(var.instance.spec, "proxy_send_timeout", "300s")
+  # Resolved instance-level proxy timeouts. Default 60s (deliberate — set a longer value
+  # per-ingress via spec where needed). Applied gateway-wide via the proxy-timeouts
+  # SnippetsPolicy (http.server); per-rule nginx_timeouts (SnippetsFilter, http.server.location)
+  # overrides per route.
+  instance_proxy_connect_timeout = lookup(var.instance.spec, "proxy_connect_timeout", "60s")
+  instance_proxy_read_timeout    = lookup(var.instance.spec, "proxy_read_timeout", "60s")
+  instance_proxy_send_timeout    = lookup(var.instance.spec, "proxy_send_timeout", "60s")
 
   # SnippetsPolicy resources:
   # - request-id: X-Request-ID / FACETS-REQUEST-ID injection (external TLS termination only)
