@@ -1146,10 +1146,10 @@ resource "helm_release" "nginx_gateway_fabric" {
           }
         }
 
-        # Control plane autoscaling - always enabled; min defaults to 1 (single source of truth at steady state, scales up under load)
+        # Control plane autoscaling - always enabled; min 2 for warm-standby HA (leader election → fast failover)
         autoscaling = {
           enable                            = true
-          minReplicas                       = lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "scaling", {}), "min_replicas", 1)
+          minReplicas                       = lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "scaling", {}), "min_replicas", 2)
           maxReplicas                       = lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "scaling", {}), "max_replicas", 3)
           targetCPUUtilizationPercentage    = lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "scaling", {}), "target_cpu_utilization_percentage", 70)
           targetMemoryUtilizationPercentage = lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "scaling", {}), "target_memory_utilization_percentage", 80)
