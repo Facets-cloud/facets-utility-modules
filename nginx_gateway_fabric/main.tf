@@ -1137,12 +1137,12 @@ resource "helm_release" "nginx_gateway_fabric" {
         # Control plane resources
         resources = {
           requests = {
-            cpu    = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "requests", {}), "cpu", "200m")
-            memory = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "requests", {}), "memory", "256Mi")
+            cpu    = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "requests", {}), "cpu", "250m")
+            memory = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "requests", {}), "memory", "512Mi")
           }
           limits = {
-            cpu    = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "limits", {}), "cpu", "500m")
-            memory = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "limits", {}), "memory", "512Mi")
+            cpu    = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "limits", {}), "cpu", "1")
+            memory = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "limits", {}), "memory", "1Gi")
           }
         }
 
