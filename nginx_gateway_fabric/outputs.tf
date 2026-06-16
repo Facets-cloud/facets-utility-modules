@@ -135,7 +135,7 @@ output "legacy_resource_details" {
       resource_name = var.instance_name
       key           = var.instance_name
     }] : [],
-    lookup(var.instance.spec, "disable_base_domain", false) ? [] : [{
+    [{
       name          = "Base Domain"
       value         = local.base_domain
       resource_type = "ingress"
