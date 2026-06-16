@@ -1102,7 +1102,7 @@ locals {
 resource "helm_release" "nginx_gateway_fabric" {
   name             = local.helm_release_name
   wait             = lookup(var.instance.spec, "helm_wait", true)
-  chart            = "${path.module}/charts/nginx-gateway-fabric-2.4.1.tgz"
+  chart            = "${path.module}/charts/nginx-gateway-fabric-2.6.3.tgz"
   namespace        = var.environment.namespace
   max_history      = 10
   skip_crds        = false
@@ -1128,8 +1128,8 @@ resource "helm_release" "nginx_gateway_fabric" {
         labels = local.common_labels
 
         image = {
-          repository = "facetscloud/nginx-gateway-fabric"
-          tag        = "v2.4.1"
+          repository = "ghcr.io/nginx/nginx-gateway-fabric"
+          tag        = "2.6.3"
           pullPolicy = "IfNotPresent"
         }
         imagePullSecrets = lookup(var.inputs, "artifactories", null) != null ? var.inputs.artifactories.attributes.registry_secrets_list : []
@@ -1146,10 +1146,10 @@ resource "helm_release" "nginx_gateway_fabric" {
           }
         }
 
-        # Control plane autoscaling - always enabled
+        # Control plane autoscaling - always enabled; min defaults to 1 (single source of truth at steady state, scales up under load)
         autoscaling = {
           enable                            = true
-          minReplicas                       = lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "scaling", {}), "min_replicas", 2)
+          minReplicas                       = lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "scaling", {}), "min_replicas", 1)
           maxReplicas                       = lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "scaling", {}), "max_replicas", 3)
           targetCPUUtilizationPercentage    = lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "scaling", {}), "target_cpu_utilization_percentage", 70)
           targetMemoryUtilizationPercentage = lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "scaling", {}), "target_memory_utilization_percentage", 80)
