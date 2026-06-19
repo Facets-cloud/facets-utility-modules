@@ -1102,7 +1102,7 @@ locals {
 resource "helm_release" "nginx_gateway_fabric" {
   name             = local.helm_release_name
   wait             = lookup(var.instance.spec, "helm_wait", true)
-  chart            = "${path.module}/charts/nginx-gateway-fabric-2.6.3.tgz"
+  chart            = "${path.module}/charts/nginx-gateway-fabric-2.6.5.tgz"
   namespace        = var.environment.namespace
   max_history      = 10
   skip_crds        = false
@@ -1128,8 +1128,11 @@ resource "helm_release" "nginx_gateway_fabric" {
         labels = local.common_labels
 
         image = {
-          repository = "ghcr.io/nginx/nginx-gateway-fabric"
-          tag        = "2.6.3"
+          # Custom control-plane image: NGF 2.6.5 + issue #5330 fix (connection-tracker
+          # generation guard for stale-stream reconnect race). Data plane uses the chart
+          # default (ghcr.io/nginx/nginx-gateway-fabric/nginx:2.6.5).
+          repository = "facetscloud/nginx-gateway-fabric"
+          tag        = "2.6.5"
           pullPolicy = "IfNotPresent"
         }
         imagePullSecrets = lookup(var.inputs, "artifactories", null) != null ? var.inputs.artifactories.attributes.registry_secrets_list : []
