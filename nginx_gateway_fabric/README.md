@@ -1,6 +1,6 @@
 # nginx_gateway_fabric
 
-Cloud-agnostic base module for [NGINX Gateway Fabric](https://github.com/nginxinc/nginx-gateway-fabric) (v2.4.1) using the Kubernetes Gateway API.
+Cloud-agnostic base module for [NGINX Gateway Fabric](https://github.com/nginxinc/nginx-gateway-fabric) (v2.6.5) using the Kubernetes Gateway API.
 
 This module is designed to be called by cloud-specific flavor modules (AWS, GCP, Azure, OVH) that pass their own LB annotations and proxy configuration.
 
@@ -63,7 +63,7 @@ module "nginx_gateway_fabric" {
 
 ## What this module creates
 
-- NGINX Gateway Fabric Helm release (chart v2.4.1)
+- NGINX Gateway Fabric Helm release (chart v2.6.5)
 - GatewayClass and Gateway with per-domain HTTPS listeners
 - HTTPRoute and GRPCRoute resources from spec rules
 - Bootstrap TLS certificates (self-signed, replaced by cert-manager)
