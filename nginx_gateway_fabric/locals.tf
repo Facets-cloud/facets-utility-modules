@@ -2,7 +2,6 @@ locals {
   username        = lookup(var.instance.spec, "basic_auth", false) ? "${var.instance_name}user" : ""
   password        = lookup(var.instance.spec, "basic_auth", false) && length(random_string.basic_auth_password) > 0 ? random_string.basic_auth_password[0].result : ""
   is_auth_enabled = length(local.username) > 0 && length(local.password) > 0
-  auth_prefix     = local.is_auth_enabled ? "${local.username}:${local.password}@" : ""
 
   output_attributes = merge(
     {
@@ -32,17 +31,20 @@ locals {
     for route_key, route in local.rulesFiltered : {
       for domain_key, domain in local.domains :
       "${route_key}--${domain_key}" => {
+        connection_string = local.is_auth_enabled ? "https://${local.username}:${local.password}@${
+          lookup(route, "domain_prefix", null) == null || lookup(route, "domain_prefix", null) == "" ?
+          domain.domain :
+          "${lookup(route, "domain_prefix", null)}.${domain.domain}"
+          }" : "https://${
+          lookup(route, "domain_prefix", null) == null || lookup(route, "domain_prefix", null) == "" ?
+          domain.domain :
+          "${lookup(route, "domain_prefix", null)}.${domain.domain}"
+        }"
         host = (
           lookup(route, "domain_prefix", null) == null || lookup(route, "domain_prefix", null) == "" ?
           domain.domain :
           "${lookup(route, "domain_prefix", null)}.${domain.domain}"
         )
-        connection_string = "https://${local.auth_prefix}${
-          lookup(route, "domain_prefix", null) == null || lookup(route, "domain_prefix", null) == "" ?
-          domain.domain :
-          "${lookup(route, "domain_prefix", null)}.${domain.domain}"
-        }"
-        path     = replace(lookup(route, "path", "/"), "/[*$^]/", "")
         port     = 443
         username = local.username
         password = local.password
