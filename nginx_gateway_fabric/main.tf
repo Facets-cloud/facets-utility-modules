@@ -87,6 +87,9 @@ locals {
   # Filter rules
   rulesFiltered = {
     for k, v in local.rulesRaw : length(k) < 175 ? k : md5(k) => merge(v, {
+      # A rule with no domain_prefix is bound to the apex (bare) domain; otherwise
+      # to a subdomain. This drives both its hostname and which listener it attaches to.
+      is_apex    = lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == ""
       host       = lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? "${local.base_domain}" : "${lookup(v, "domain_prefix", null)}.${local.base_domain}"
       domain_key = "facets"
       namespace  = lookup(v, "namespace", var.environment.namespace)
@@ -140,6 +143,26 @@ locals {
     # Exclude subdomains of domains with certificate_reference (covered by wildcard listener)
     if !anytrue([for parent_domain, cert_ref in local.domains_with_cert_ref : endswith(hostname, ".${parent_domain}")])
   }
+
+  # Per-domain HTTPS listeners for the Gateway (cert-manager mode; flat data only,
+  # rendered into listener objects in the Gateway resource below).
+  #
+  # A domain with a certificate_reference (DNS-01 / external cert) has a cert whose
+  # SANs cover BOTH the apex and the wildcard (dnsNames = [domain, *.domain]), so it
+  # gets TWO listeners: a wildcard listener (https-<key>) for subdomains and an apex
+  # listener (https-<key>-apex) for the bare domain. Without the apex listener, rules
+  # with no domain_prefix have no listener to attach to. A plain cert-manager domain
+  # (no cert_ref) keeps a single apex listener whose cert this module issues.
+  https_domain_listeners = flatten([
+    for domain_key, domain in local.domains : (
+      lookup(domain, "certificate_reference", "") != "" ? [
+        { name = "https-${domain_key}", hostname = "*.${domain.domain}", secret = domain.certificate_reference },
+        { name = "https-${domain_key}-apex", hostname = domain.domain, secret = domain.certificate_reference },
+        ] : [
+        { name = "https-${domain_key}", hostname = domain.domain, secret = "${local.name}-${domain_key}-tls-cert" },
+      ]
+    ) if can(domain.domain)
+  ])
 
   # Nodepool configuration
   nodepool_config_raw = lookup(var.inputs, "kubernetes_node_pool_details", null)
@@ -311,17 +334,18 @@ locals {
             }] : (
             # Default (non-external-TLS): original logic with both listeners
             concat(
-              lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
+              # One HTTPS parentRef per domain. An apex rule (no domain_prefix) attaches to
+              # the domain's apex listener; a subdomain rule attaches to the wildcard
+              # listener (cert_ref domains) or its per-hostname listener (cert-manager).
+              [
                 for domain_key, domain in local.domains : {
-                  name        = local.name
-                  namespace   = var.environment.namespace
-                  sectionName = "https-${domain_key}"
-                }
-                ] : [
-                for domain_key, domain in local.domains : {
-                  name        = local.name
-                  namespace   = var.environment.namespace
-                  sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
+                  name      = local.name
+                  namespace = var.environment.namespace
+                  sectionName = lookup(domain, "certificate_reference", "") != "" ? (
+                    v.is_apex ? "https-${domain_key}-apex" : "https-${domain_key}"
+                    ) : (
+                    v.is_apex ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
+                  )
                 }
               ],
               !local.force_ssl_redirection ? [{
@@ -548,17 +572,18 @@ locals {
               sectionName = "http"
             }] : (
             concat(
-              lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
+              # One HTTPS parentRef per domain. An apex rule (no domain_prefix) attaches to
+              # the domain's apex listener; a subdomain rule attaches to the wildcard
+              # listener (cert_ref domains) or its per-hostname listener (cert-manager).
+              [
                 for domain_key, domain in local.domains : {
-                  name        = local.name
-                  namespace   = var.environment.namespace
-                  sectionName = "https-${domain_key}"
-                }
-                ] : [
-                for domain_key, domain in local.domains : {
-                  name        = local.name
-                  namespace   = var.environment.namespace
-                  sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
+                  name      = local.name
+                  namespace = var.environment.namespace
+                  sectionName = lookup(domain, "certificate_reference", "") != "" ? (
+                    v.is_apex ? "https-${domain_key}-apex" : "https-${domain_key}"
+                    ) : (
+                    v.is_apex ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
+                  )
                 }
               ],
               !local.force_ssl_redirection ? [{
@@ -1292,17 +1317,18 @@ resource "helm_release" "nginx_gateway_fabric" {
                 }
               }
             }] : [],
-            # cert-manager mode: per-domain HTTPS listeners with TLS termination at Gateway
-            var.external_tls_termination ? [] : [for domain_key, domain in local.domains : {
-              name     = "https-${domain_key}"
+            # cert-manager mode: per-domain HTTPS listeners (see local.https_domain_listeners
+            # for the apex-vs-wildcard rationale).
+            var.external_tls_termination ? [] : [for l in local.https_domain_listeners : {
+              name     = l.name
               protocol = "HTTPS"
               port     = 443
-              hostname = lookup(domain, "certificate_reference", "") != "" ? "*.${domain.domain}" : domain.domain
+              hostname = l.hostname
               tls = {
                 mode = "Terminate"
                 certificateRefs = [{
                   kind = "Secret"
-                  name = lookup(domain, "certificate_reference", "") != "" ? domain.certificate_reference : "${local.name}-${domain_key}-tls-cert"
+                  name = l.secret
                 }]
               }
               allowedRoutes = {
@@ -1310,7 +1336,7 @@ resource "helm_release" "nginx_gateway_fabric" {
                   from = "All"
                 }
               }
-            } if can(domain.domain)],
+            }],
             # cert-manager mode: HTTPS Listeners for additional hostnames
             var.external_tls_termination ? [] : [for hostname_key, config in local.additional_hostname_configs : {
               name     = "https-${hostname_key}"
