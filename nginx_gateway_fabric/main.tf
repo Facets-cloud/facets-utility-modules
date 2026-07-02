@@ -54,11 +54,18 @@ locals {
     }
   ) : local.base_helm_values_raw
 
-  # Load balancer configuration - determine record type based on what's actually available
-  lb_hostname     = try(data.kubernetes_service.gateway_lb.status[0].load_balancer[0].ingress[0].hostname, "")
-  lb_ip           = try(data.kubernetes_service.gateway_lb.status[0].load_balancer[0].ingress[0].ip, "")
-  record_type     = local.lb_hostname != "" ? "CNAME" : "A"
-  lb_record_value = local.lb_hostname != "" ? local.lb_hostname : local.lb_ip
+  # AWS ELB (hostname) -> Route53 alias A; a CNAME breaks DNS-01 via cnameStrategy:Follow.
+  # Non-AWS (IP) -> plain A. ELB zone id from a static region->NLB-zone-id map (nlb_zone_ids.tf):
+  # the LB is provisioned async in the cloud account, so a data.aws_lb read races/fails; the map
+  # derives the id from the LB hostname (a string, once the NLB is up), no API call/cross-account.
+  lb_hostname             = try(data.kubernetes_service.gateway_lb.status[0].load_balancer[0].ingress[0].hostname, "")
+  lb_ip                   = try(data.kubernetes_service.gateway_lb.status[0].load_balancer[0].ingress[0].ip, "")
+  lb_record_type_override = try(var.inputs.kubernetes_details.attributes.lb_service_record_type, null)
+  lb_region               = try(regex("[.]elb[.]([a-z0-9-]+)[.]amazonaws[.]com", local.lb_hostname)[0], "")
+  elb_zone_id             = lookup(local.nlb_hosted_zone_ids, local.lb_region, "")
+  use_alias               = local.lb_record_type_override == null && local.lb_hostname != "" && local.elb_zone_id != ""
+  record_type             = local.use_alias ? "A" : coalesce(local.lb_record_type_override, local.lb_hostname != "" ? "CNAME" : "A")
+  lb_record_value         = local.record_type == "CNAME" ? local.lb_hostname : local.lb_ip
 
   # Rules configuration
   rulesRaw = lookup(var.instance.spec, "rules", {})
@@ -80,6 +87,10 @@ locals {
   }
 
   domains = merge(lookup(var.instance.spec, "domains", {}), local.add_base_domain)
+
+  # Wildcard TLS: one shared cert [domain, *.domain] per domain via the listenerset-shim
+  # (single DNS-01 challenge). Set by private-LB flavors alongside a DNS-01 cluster_issuer.
+  wildcard_tls = lookup(var.instance.spec, "wildcard_tls", false)
 
   # List of all domain hostnames for HTTPRoutes
   all_domain_hostnames = [for domain_key, domain in local.domains : domain.domain]
@@ -137,8 +148,10 @@ locals {
       hostname    = hostname
       secret_name = "${local.name}-${replace(replace(hostname, ".", "-"), "*", "wildcard")}-tls-cert"
     }
-    # Exclude subdomains of domains with certificate_reference (covered by wildcard listener)
-    if !anytrue([for parent_domain, cert_ref in local.domains_with_cert_ref : endswith(hostname, ".${parent_domain}")])
+    # Exclude subdomains of domains with certificate_reference (covered by wildcard listener),
+    # and — in wildcard_tls mode — subdomains of ANY managed domain (covered by the *.domain listener)
+    if !anytrue([for parent_domain, cert_ref in local.domains_with_cert_ref : endswith(hostname, ".${parent_domain}")]) &&
+    !(local.wildcard_tls && anytrue([for d in local.all_domain_hostnames : endswith(hostname, ".${d}")]))
   }
 
   # Nodepool configuration
@@ -173,15 +186,6 @@ locals {
     },
     local.gateway_api_crd_labels
   )
-
-  # Domains that need bootstrap TLS certificates for HTTP-01 validation
-  # Bootstrap cert is needed for domains without certificate_reference
-  # Not needed when TLS is terminated externally (e.g., at the NLB)
-  bootstrap_tls_domains = var.external_tls_termination ? {} : {
-    for domain_key, domain in local.domains :
-    domain_key => domain
-    if can(domain.domain) && lookup(domain, "certificate_reference", "") == ""
-  }
 
   # Domains that need cert-manager to issue certificates
   # Only domains WITHOUT certificate_reference
@@ -309,20 +313,14 @@ locals {
               namespace   = var.environment.namespace
               sectionName = "http"
             }] : (
-            # Default (non-external-TLS): original logic with both listeners
+            # HTTPS listeners live in ListenerSets; HTTP (80) stays on the Gateway.
             concat(
               lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
-                for domain_key, domain in local.domains : {
-                  name        = local.name
-                  namespace   = var.environment.namespace
-                  sectionName = "https-${domain_key}"
-                }
+                for domain_key, domain in local.domains :
+                lookup(local.listener_parentref, "https-${domain_key}", merge(local.gateway_parentref_base, { sectionName = "https-${domain_key}" }))
                 ] : [
-                for domain_key, domain in local.domains : {
-                  name        = local.name
-                  namespace   = var.environment.namespace
-                  sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
-                }
+                for domain_key, domain in local.domains :
+                lookup(local.listener_parentref, lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : (local.wildcard_tls ? "https-${domain_key}-wildcard" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"), merge(local.gateway_parentref_base, { sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : (local.wildcard_tls ? "https-${domain_key}-wildcard" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}") }))
               ],
               !local.force_ssl_redirection ? [{
                 name        = local.name
@@ -549,17 +547,11 @@ locals {
             }] : (
             concat(
               lookup(v, "domain_prefix", null) == null || lookup(v, "domain_prefix", null) == "" ? [
-                for domain_key, domain in local.domains : {
-                  name        = local.name
-                  namespace   = var.environment.namespace
-                  sectionName = "https-${domain_key}"
-                }
+                for domain_key, domain in local.domains :
+                lookup(local.listener_parentref, "https-${domain_key}", merge(local.gateway_parentref_base, { sectionName = "https-${domain_key}" }))
                 ] : [
-                for domain_key, domain in local.domains : {
-                  name        = local.name
-                  namespace   = var.environment.namespace
-                  sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"
-                }
+                for domain_key, domain in local.domains :
+                lookup(local.listener_parentref, lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : (local.wildcard_tls ? "https-${domain_key}-wildcard" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}"), merge(local.gateway_parentref_base, { sectionName = lookup(domain, "certificate_reference", "") != "" ? "https-${domain_key}" : (local.wildcard_tls ? "https-${domain_key}-wildcard" : "https-${replace(replace("${lookup(v, "domain_prefix", null)}.${domain.domain}", ".", "-"), "*", "wildcard")}") }))
               ],
               !local.force_ssl_redirection ? [{
                 name        = local.name
@@ -941,6 +933,113 @@ locals {
     }
   } : {}
 
+  # Per-hostname HTTPS listeners, placed in ListenerSets (not on the Gateway) to scale
+  # past the 64-listeners-per-Gateway limit. certificate_reference keeps a wildcard listener.
+  # wildcard_tls mode emits apex + *.domain listeners sharing one shim-issued cert secret.
+  https_listeners_flat = var.external_tls_termination ? [] : concat(
+    flatten([for domain_key, domain in local.domains : (
+      lookup(domain, "certificate_reference", "") != "" ? [
+        {
+          name     = "https-${domain_key}"
+          hostname = "*.${domain.domain}"
+          secret   = domain.certificate_reference
+        }
+        ] : (local.wildcard_tls ? [
+          {
+            name     = "https-${domain_key}"
+            hostname = domain.domain
+            secret   = "${local.name}-${domain_key}-tls-cert"
+          },
+          {
+            name     = "https-${domain_key}-wildcard"
+            hostname = "*.${domain.domain}"
+            secret   = "${local.name}-${domain_key}-tls-cert"
+          }
+          ] : [
+          {
+            name     = "https-${domain_key}"
+            hostname = domain.domain
+            secret   = "${local.name}-${domain_key}-tls-cert"
+          }
+      ])
+    ) if can(domain.domain)]),
+    [for hostname_key, config in local.additional_hostname_configs : {
+      name     = "https-${hostname_key}"
+      hostname = config.hostname
+      secret   = config.secret_name
+    }]
+  )
+
+  # ListenerSets are themselves capped at 64 listeners, so chunk into sets of 64.
+  listener_chunks = chunklist(local.https_listeners_flat, 64)
+
+  listenerset_resources = {
+    for i, chunk in local.listener_chunks :
+    "listenerset-${local.name}-${i}" => {
+      apiVersion = "gateway.networking.k8s.io/v1"
+      kind       = "ListenerSet"
+      metadata = {
+        name      = "${local.name}-ls-${i}"
+        namespace = var.environment.namespace
+        labels    = local.common_labels
+        # cert-manager listenerset-shim issues certs for these TLS listeners off this
+        # annotation (the Gateway's annotation only covers Gateway listeners).
+        annotations = local.use_gateway_shim ? {
+          "cert-manager.io/cluster-issuer" = local.effective_cluster_issuer
+          "cert-manager.io/renew-before"   = lookup(var.instance.spec, "renew_cert_before", "720h")
+        } : {}
+      }
+      spec = {
+        parentRef = {
+          name  = local.name
+          kind  = "Gateway"
+          group = "gateway.networking.k8s.io"
+        }
+        listeners = [for l in chunk : {
+          name     = l.name
+          protocol = "HTTPS"
+          port     = 443
+          hostname = l.hostname
+          tls = {
+            mode = "Terminate"
+            certificateRefs = [{
+              kind = "Secret"
+              name = l.secret
+            }]
+          }
+          allowedRoutes = {
+            namespaces = {
+              from = "All"
+            }
+          }
+        }]
+      }
+    }
+  }
+
+  # listener name -> parentRef pointing at the ListenerSet that holds it (empty-safe).
+  listener_parentref = {
+    for entry in flatten([
+      for i, chunk in local.listener_chunks : [
+        for l in chunk : { name = l.name, ls = "${local.name}-ls-${i}" }
+      ]
+      ]) : entry.name => {
+      group       = "gateway.networking.k8s.io"
+      kind        = "ListenerSet"
+      name        = entry.ls
+      namespace   = var.environment.namespace
+      sectionName = entry.name
+    }
+  }
+
+  # Fallback parentRef (Gateway) for any listener name not mapped to a ListenerSet.
+  gateway_parentref_base = {
+    group     = "gateway.networking.k8s.io"
+    kind      = "Gateway"
+    name      = local.name
+    namespace = var.environment.namespace
+  }
+
   # --- Three Helm release groups ---
   # Routes are split into separate releases for ordered deployment and clear separation
   # of HTTPS vs HTTP traffic handling.
@@ -958,6 +1057,7 @@ locals {
     local.clusterissuer_resources,
     local.certificate_resources,
     local.certificate_additional_resources,
+    local.listenerset_resources,
     var.additional_base_resources
   )
 
@@ -978,104 +1078,10 @@ locals {
   )
 }
 
-# Bootstrap TLS Private Key for HTTP-01 validation
-# Creates a temporary self-signed cert so Gateway 443 listener can start
-# cert-manager will overwrite this secret once HTTP-01 challenge succeeds
-resource "tls_private_key" "bootstrap" {
-  for_each  = local.bootstrap_tls_domains
-  algorithm = "RSA"
-  rsa_bits  = 2048
-}
-
-resource "tls_self_signed_cert" "bootstrap" {
-  for_each        = local.bootstrap_tls_domains
-  private_key_pem = tls_private_key.bootstrap[each.key].private_key_pem
-
-  subject {
-    common_name = each.value.domain
-  }
-
-  validity_period_hours = 8760 # 1 year
-
-  dns_names = [
-    each.value.domain,
-    "*.${each.value.domain}"
-  ]
-
-  allowed_uses = [
-    "key_encipherment",
-    "digital_signature",
-    "server_auth"
-  ]
-}
-
-resource "kubernetes_secret_v1" "bootstrap_tls" {
-  for_each = local.bootstrap_tls_domains
-
-  metadata {
-    name      = "${local.name}-${each.key}-tls-cert"
-    namespace = var.environment.namespace
-  }
-
-  data = {
-    "tls.crt" = tls_self_signed_cert.bootstrap[each.key].cert_pem
-    "tls.key" = tls_private_key.bootstrap[each.key].private_key_pem
-  }
-
-  type = "kubernetes.io/tls"
-
-  lifecycle {
-    ignore_changes = [data, metadata[0].annotations, metadata[0].labels]
-  }
-}
-
-# Bootstrap TLS for additional hostnames (from domain_prefix in rules)
-# Only for additional hostnames that did NOT inherit a certificate_reference from parent domain
-resource "tls_private_key" "bootstrap_additional" {
-  for_each  = local.additional_hostname_configs
-  algorithm = "RSA"
-  rsa_bits  = 2048
-}
-
-resource "tls_self_signed_cert" "bootstrap_additional" {
-  for_each        = local.additional_hostname_configs
-  private_key_pem = tls_private_key.bootstrap_additional[each.key].private_key_pem
-
-  subject {
-    common_name = each.value.hostname
-  }
-
-  validity_period_hours = 8760 # 1 year
-
-  dns_names = [each.value.hostname]
-
-  allowed_uses = [
-    "key_encipherment",
-    "digital_signature",
-    "server_auth"
-  ]
-}
-
-resource "kubernetes_secret_v1" "bootstrap_tls_additional" {
-  for_each = local.additional_hostname_configs
-
-  metadata {
-    name      = each.value.secret_name
-    namespace = var.environment.namespace
-  }
-
-  data = {
-    "tls.crt" = tls_self_signed_cert.bootstrap_additional[each.key].cert_pem
-    "tls.key" = tls_private_key.bootstrap_additional[each.key].private_key_pem
-  }
-
-  type = "kubernetes.io/tls"
-
-  lifecycle {
-    ignore_changes = [data, metadata[0].annotations, metadata[0].labels]
-  }
-}
-
+# Bootstrap TLS placeholder secrets removed: cert-manager's gateway/listenerset-shim creates the
+# listener's TLS secret itself. The old placeholder worked around the cert-manager HTTP-01 + Gateway
+# API bug (cert-manager/cert-manager#7337, broken 1.16.0, fixed 1.18.1); the bundled cert-manager
+# is past that fix, so no placeholder is needed.
 
 # Helm release name - keep under 34 chars so that fullname (release + "-" + chart name = 34+1+20 = 55)
 # plus the longest suffix (-certgen, 8 chars) stays within the 63-char k8s label value limit.
@@ -1102,7 +1108,7 @@ locals {
 resource "helm_release" "nginx_gateway_fabric" {
   name             = local.helm_release_name
   wait             = lookup(var.instance.spec, "helm_wait", true)
-  chart            = "${path.module}/charts/nginx-gateway-fabric-2.4.1.tgz"
+  chart            = "${path.module}/charts/nginx-gateway-fabric-2.6.5.tgz"
   namespace        = var.environment.namespace
   max_history      = 10
   skip_crds        = false
@@ -1124,29 +1130,37 @@ resource "helm_release" "nginx_gateway_fabric" {
         # Configure the GatewayClass name
         gatewayClassName = local.gateway_class_name
 
+        # Required for the ListenerSet CRD.
+        gwAPIExperimentalFeatures = {
+          enable = true
+        }
+
         # Labels for control plane deployment
         labels = local.common_labels
 
         image = {
+          # Custom control-plane image: NGF 2.6.5 + issue #5330 fix (connection-tracker
+          # generation guard for stale-stream reconnect race). Data plane uses the chart
+          # default (ghcr.io/nginx/nginx-gateway-fabric/nginx:2.6.5).
           repository = "facetscloud/nginx-gateway-fabric"
-          tag        = "v2.4.1"
-          pullPolicy = "IfNotPresent"
+          tag        = "2.6.5"
+          pullPolicy = "Always"
         }
         imagePullSecrets = lookup(var.inputs, "artifactories", null) != null ? var.inputs.artifactories.attributes.registry_secrets_list : []
 
         # Control plane resources
         resources = {
           requests = {
-            cpu    = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "requests", {}), "cpu", "200m")
-            memory = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "requests", {}), "memory", "256Mi")
+            cpu    = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "requests", {}), "cpu", "250m")
+            memory = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "requests", {}), "memory", "512Mi")
           }
           limits = {
-            cpu    = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "limits", {}), "cpu", "500m")
-            memory = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "limits", {}), "memory", "512Mi")
+            cpu    = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "limits", {}), "cpu", "1")
+            memory = lookup(lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "resources", {}), "limits", {}), "memory", "1Gi")
           }
         }
 
-        # Control plane autoscaling - always enabled
+        # Control plane autoscaling - always enabled; min 2 for warm-standby HA (leader election → fast failover)
         autoscaling = {
           enable                            = true
           minReplicas                       = lookup(lookup(lookup(var.instance.spec, "control_plane", {}), "scaling", {}), "min_replicas", 2)
@@ -1269,6 +1283,12 @@ resource "helm_release" "nginx_gateway_fabric" {
         } : {}
         spec = {
           gatewayClassName = local.gateway_class_name
+          # Opt in to same-namespace ListenerSets (default None rejects them).
+          allowedListeners = {
+            namespaces = {
+              from = "Same"
+            }
+          }
           listeners = concat(
             # HTTP Listener (always present)
             [{
@@ -1292,44 +1312,8 @@ resource "helm_release" "nginx_gateway_fabric" {
                 }
               }
             }] : [],
-            # cert-manager mode: per-domain HTTPS listeners with TLS termination at Gateway
-            var.external_tls_termination ? [] : [for domain_key, domain in local.domains : {
-              name     = "https-${domain_key}"
-              protocol = "HTTPS"
-              port     = 443
-              hostname = lookup(domain, "certificate_reference", "") != "" ? "*.${domain.domain}" : domain.domain
-              tls = {
-                mode = "Terminate"
-                certificateRefs = [{
-                  kind = "Secret"
-                  name = lookup(domain, "certificate_reference", "") != "" ? domain.certificate_reference : "${local.name}-${domain_key}-tls-cert"
-                }]
-              }
-              allowedRoutes = {
-                namespaces = {
-                  from = "All"
-                }
-              }
-            } if can(domain.domain)],
-            # cert-manager mode: HTTPS Listeners for additional hostnames
-            var.external_tls_termination ? [] : [for hostname_key, config in local.additional_hostname_configs : {
-              name     = "https-${hostname_key}"
-              protocol = "HTTPS"
-              port     = 443
-              hostname = config.hostname
-              tls = {
-                mode = "Terminate"
-                certificateRefs = [{
-                  kind = "Secret"
-                  name = config.secret_name
-                }]
-              }
-              allowedRoutes = {
-                namespaces = {
-                  from = "All"
-                }
-              }
-            }]
+            # cert-manager HTTPS listeners now live in ListenerSets, not on the Gateway.
+            []
           )
         }
       }]
@@ -1337,10 +1321,6 @@ resource "helm_release" "nginx_gateway_fabric" {
     yamlencode(local.base_helm_values)
   ]
 
-  depends_on = [
-    kubernetes_secret_v1.bootstrap_tls,
-    kubernetes_secret_v1.bootstrap_tls_additional
-  ]
 }
 
 # Deploy all Gateway API resources using facets-utility-modules
@@ -1442,11 +1422,19 @@ resource "aws_route53_record" "cluster-base-domain" {
     helm_release.nginx_gateway_fabric,
     data.kubernetes_service.gateway_lb
   ]
-  zone_id  = local.tenant_base_domain_id
-  name     = local.base_domain
-  type     = local.record_type
-  ttl      = "300"
-  records  = [local.lb_record_value]
+  zone_id = local.tenant_base_domain_id
+  name    = local.base_domain
+  type    = local.record_type
+  ttl     = local.use_alias ? null : 300
+  records = local.use_alias ? null : [local.lb_record_value]
+  dynamic "alias" {
+    for_each = local.use_alias ? [1] : []
+    content {
+      name                   = local.lb_hostname
+      zone_id                = local.elb_zone_id
+      evaluate_target_health = false
+    }
+  }
   provider = aws3tooling
   lifecycle {
     prevent_destroy = true
@@ -1459,11 +1447,19 @@ resource "aws_route53_record" "cluster-base-domain-wildcard" {
     helm_release.nginx_gateway_fabric,
     data.kubernetes_service.gateway_lb
   ]
-  zone_id  = local.tenant_base_domain_id
-  name     = local.base_subdomain
-  type     = local.record_type
-  ttl      = "300"
-  records  = [local.lb_record_value]
+  zone_id = local.tenant_base_domain_id
+  name    = local.base_subdomain
+  type    = local.record_type
+  ttl     = local.use_alias ? null : 300
+  records = local.use_alias ? null : [local.lb_record_value]
+  dynamic "alias" {
+    for_each = local.use_alias ? [1] : []
+    content {
+      name                   = local.lb_hostname
+      zone_id                = local.elb_zone_id
+      evaluate_target_health = false
+    }
+  }
   provider = aws3tooling
   lifecycle {
     prevent_destroy = true

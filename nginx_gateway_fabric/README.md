@@ -1,6 +1,6 @@
 # nginx_gateway_fabric
 
-Cloud-agnostic base module for [NGINX Gateway Fabric](https://github.com/nginxinc/nginx-gateway-fabric) (v2.4.1) using the Kubernetes Gateway API.
+Cloud-agnostic base module for [NGINX Gateway Fabric](https://github.com/nginxinc/nginx-gateway-fabric) (v2.6.5) using the Kubernetes Gateway API.
 
 This module is designed to be called by cloud-specific flavor modules (AWS, GCP, Azure, OVH) that pass their own LB annotations and proxy configuration.
 
@@ -63,12 +63,22 @@ module "nginx_gateway_fabric" {
 
 ## What this module creates
 
-- NGINX Gateway Fabric Helm release (chart v2.4.1)
-- GatewayClass and Gateway with per-domain HTTPS listeners
-- HTTPRoute and GRPCRoute resources from spec rules
-- Bootstrap TLS certificates (self-signed, replaced by cert-manager)
-- cert-manager ClusterIssuer for HTTP-01 validation
-- cert-manager Certificate resources (when mixed cert modes)
+- NGINX Gateway Fabric Helm release (chart v2.6.5), with Gateway API experimental
+  features enabled (required for the ListenerSet CRD)
+- GatewayClass and a Gateway carrying only the HTTP (:80) listener, with
+  `allowedListeners` set so ListenerSets can attach
+- `ListenerSet` resources holding the per-hostname HTTPS listeners, chunked at 64
+  listeners each — this is how the deployment scales past the 64-listeners-per-Gateway
+  limit
+- HTTPRoute and GRPCRoute resources from spec rules (HTTPS routes attach to the
+  ListenerSet listeners; the HTTP listener stays on the Gateway)
+- Bootstrap TLS secrets (self-signed) so each HTTPS listener is valid before
+  cert-manager issues — the listener-invalid / cert-not-issued deadlock breaker;
+  cert-manager overwrites them once HTTP-01 succeeds
+- cert-manager ClusterIssuer for HTTP-01 validation, annotated onto the ListenerSet
+  so cert-manager's listenerset-shim issues per-hostname certs
+- cert-manager Certificate resources (per hostname, apex/concrete names — HTTP-01
+  never issues wildcards)
 - Basic auth via NGF AuthenticationFilter CRD (optional)
 - PodMonitor for Prometheus scraping (optional)
 - ReferenceGrant for cross-namespace backends
@@ -76,10 +86,14 @@ module "nginx_gateway_fabric" {
 - Route53 DNS records for base domain and wildcard (AWS only)
 - HTTP to HTTPS redirect route (when force_ssl_redirection enabled)
 
+A domain may instead carry a `certificate_reference` (a pre-made TLS secret name) as
+an optional escape hatch — that listener uses the supplied secret and cert-manager is
+not involved for it.
+
 ## What flavor modules provide
 
 | Config | Example (AWS) |
 |--------|---------------|
 | `service_annotations` | NLB scheme, target type, backend protocol, proxy protocol |
 | `nginx_proxy_extra_config` | `rewriteClientIP.mode = "ProxyProtocol"` |
-| ACM certificate handling | Detect ACM ARN, create ACK Certificate CRD, rewrite `certificate_reference` to K8s secret name before passing `instance` |
+| ACM-at-LB handling | Detect an ACM ARN in `certificate_reference`, set `external_tls_termination` and the NLB `aws-load-balancer-ssl-cert` annotation so the NLB terminates TLS (no in-cluster ACK controller) |
