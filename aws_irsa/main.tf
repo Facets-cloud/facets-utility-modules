@@ -1,9 +1,10 @@
 
 
 module "iam_eks_role" {
-  source           = "./iam-role-for-service-accounts-eks"
-  role_name        = var.iam_role_name
-  role_policy_arns = { for k, v in var.iam_arns : k => v.arn }
+  source               = "./iam-role-for-service-accounts-eks"
+  role_name            = var.iam_role_name
+  role_policy_arns     = { for k, v in var.iam_arns : k => v.arn }
+  max_session_duration = var.max_session_duration
   oidc_providers = {
     one = {
       provider_arn               = var.eks_oidc_provider_arn
