@@ -52,7 +52,7 @@ locals {
       value    = toleration.value
     }
   ]
-  all_tolerations = concat(local.adv_tolerations, local.parsed_taints, var.environment.default_tolerations)
+  all_tolerations = concat(local.adv_tolerations, local.parsed_taints, lookup(var.environment, "default_tolerations", []))
 
   size = lookup(lookup(var.values.spec, "runtime", {}), "size", {
     cpu          = "1000m"

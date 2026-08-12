@@ -60,7 +60,7 @@ resource "kubernetes_job" "postgres-database" {
           ]
         }
         dynamic "toleration" {
-          for_each = concat(var.environment.default_tolerations, var.inputs.kubernetes_details.attributes.legacy_outputs.facets_dedicated_tolerations, var.tolerations)
+          for_each = concat(lookup(var.environment, "default_tolerations", []), var.inputs.kubernetes_details.attributes.legacy_outputs.facets_dedicated_tolerations, var.tolerations)
           content {
             key      = lookup(toleration.value, "key", null)
             operator = lookup(toleration.value, "operator", "Equal")
