@@ -41,6 +41,9 @@ spec:
         {{- if ( hasKey .Values.spec "runtime_class_name") }}
         {{- include "app-chart.runtime_class_name" . | indent 8 -}}
         {{- end }}
+        {{- if .Values.advanced.common.app_chart.values.dns_config }}
+        {{- include "app-chart.dnsConfig" . | indent 8 -}}
+        {{- end }}
         {{- with (.Values.advanced.node_selector | default .Values.advanced.common.app_chart.values.node_selector | default "") }}
         nodeSelector:
           {{- toYaml . | nindent 10 -}}

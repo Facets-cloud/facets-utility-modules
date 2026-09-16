@@ -39,6 +39,9 @@ spec:
     {{- if ( hasKey .Values.spec "runtime_class_name") }}
     {{- include "app-chart.runtime_class_name" . | indent 6 -}} 
     {{- end }}
+    {{- if .Values.advanced.common.app_chart.values.dns_config }}
+    {{- include "app-chart.dnsConfig" . | indent 6 -}}
+    {{- end }}
     ## Pod Anti Affinity
     {{- if and ( hasKey .Values.spec "enable_host_anti_affinity" ) (.Values.spec.enable_host_anti_affinity) }}
       affinity:
