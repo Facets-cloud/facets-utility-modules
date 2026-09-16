@@ -1137,6 +1137,19 @@ runtimeClassName: {{ $runtimeClassNameValue }}
 {{- end }}
 {{- end -}}
 
+{{/*
+DNS configuration for pods.
+Guarded with `with` rather than `hasKey`: Terraform's yamlencode always writes
+the `dns_config` key (with a null value when unset), and hasKey is true for a
+null value - which would render an empty `dnsConfig:` on every pod.
+*/}}
+{{- define "app-chart.dnsConfig" -}}
+{{- with .Values.advanced.common.app_chart.values.dns_config }}
+dnsConfig:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
+
 
 {{/*
 Lifecycle support for deployment, Job & cronJob.

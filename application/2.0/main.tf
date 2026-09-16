@@ -76,6 +76,33 @@ locals {
   pod_distribution = lookup(local.advanced_config_values, "pod_distribution", {})
   sidecars         = lookup(var.values.spec, "sidecars", lookup(local.advanced_config_values, "sidecars", {}))
   init_containers  = lookup(var.values.spec, "init_containers", lookup(local.advanced_config_values, "init_containers", {}))
+
+  # DNS config - environment-wide default, overridable per service.
+  # The env default comes from the `environment` configuration module
+  # (spec.default_dns_config); the service-level override lives in
+  # advanced.common.app_chart.values.dns_config.
+  env_dns_config     = lookup(var.environment, "default_dns_config", {})
+  service_dns_config = lookup(local.advanced_config_values, "dns_config", {})
+
+  # All-or-nothing precedence: a service that declares any dns_config owns its
+  # DNS setup completely and the environment default is ignored. The two are
+  # deliberately NOT merged - merging would make the service block mean
+  # something other than what it says, and a service could never drop an
+  # inherited option (e.g. ask for `timeout` alone) without knowing every key
+  # the environment happens to set.
+  #
+  # Selection is done by taking the first non-empty candidate rather than with a
+  # ternary: Terraform unifies the types of both ternary result expressions, so
+  # an env default and a service override that set different keys (`options` vs
+  # `searches`) would fail to type-check at plan time.
+  dns_candidates = [
+    for c in [local.service_dns_config, local.env_dns_config] : c if length(c) > 0
+  ]
+
+  # Emits null when neither side configured DNS. yamlencode still writes the
+  # `dns_config: null` key, so the chart guards on truthiness (not hasKey) to
+  # keep dnsConfig off the pod spec entirely.
+  dns_config = length(local.dns_candidates) > 0 ? local.dns_candidates[0] : null
   exclude_env_and_secret_values = try(
     var.values.advanced.common.app_chart.values.exclude_env_and_secret_values,
     []
@@ -148,6 +175,7 @@ resource "helm_release" "app-chart" {
               pod_distribution = local.pod_distribution
               init_containers  = local.init_containers
               sidecars         = local.sidecars
+              dns_config       = local.dns_config
             }
           }
         }
