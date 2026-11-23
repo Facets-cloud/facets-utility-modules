@@ -764,7 +764,7 @@ locals {
         basic = {
           realm = "Authentication required"
           secretRef = {
-            name = "${local.name}-basic-auth"
+            name = local.basic_auth_secret_name
           }
         }
       }
@@ -1122,12 +1122,100 @@ locals {
   helm_release_name = local.helm_release_name_override_valid != "" ? local.helm_release_name_override_valid : substr(local.name, 0, min(length(local.name), 34))
 }
 
+locals {
+  # NGF 2.9.0 bundles nginx 1.31.9 (nginx2root fixes: CVE-2026-123007, -123633, -123634, ...).
+  # Requires Gateway API CRDs v1.7.0 (gateway_api_crd module) and Kubernetes >= 1.32.
+  ngf_version            = "2.9.0"
+  basic_auth_secret_name = "${local.name}-basic-auth-opaque"
+}
+
+# Helm installs chart crds/ only on first install, never on upgrade. Apply the NGF
+# CRDs for this version server-side before the chart is upgraded (2.9.0 changes all
+# existing gateway.nginx.org CRDs and adds four new ones the controller watches).
+resource "kubernetes_service_account_v1" "ngf_crd_upgrade" {
+  metadata {
+    name      = "${substr(local.name, 0, min(length(local.name), 40))}-ngf-crds"
+    namespace = var.environment.namespace
+  }
+}
+
+resource "kubernetes_cluster_role_v1" "ngf_crd_upgrade" {
+  metadata {
+    name = "${var.environment.namespace}-${substr(local.name, 0, min(length(local.name), 40))}-ngf-crds"
+  }
+  rule {
+    api_groups = ["apiextensions.k8s.io"]
+    resources  = ["customresourcedefinitions"]
+    verbs      = ["get", "list", "create", "update", "patch"]
+  }
+}
+
+resource "kubernetes_cluster_role_binding_v1" "ngf_crd_upgrade" {
+  metadata {
+    name = kubernetes_cluster_role_v1.ngf_crd_upgrade.metadata[0].name
+  }
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = kubernetes_cluster_role_v1.ngf_crd_upgrade.metadata[0].name
+  }
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account_v1.ngf_crd_upgrade.metadata[0].name
+    namespace = var.environment.namespace
+  }
+}
+
+resource "kubernetes_job_v1" "ngf_crd_upgrade" {
+  metadata {
+    name      = "${substr(local.name, 0, min(length(local.name), 40))}-ngf-crds-${replace(local.ngf_version, ".", "-")}"
+    namespace = var.environment.namespace
+  }
+  spec {
+    backoff_limit = 3
+    template {
+      metadata {
+        labels = { app = "ngf-crd-upgrade" }
+      }
+      spec {
+        service_account_name = kubernetes_service_account_v1.ngf_crd_upgrade.metadata[0].name
+        restart_policy       = "OnFailure"
+        node_selector        = local.nodepool_labels
+        dynamic "toleration" {
+          for_each = local.ingress_tolerations
+          content {
+            key      = lookup(toleration.value, "key", null)
+            operator = lookup(toleration.value, "operator", "Equal")
+            value    = lookup(toleration.value, "value", null)
+            effect   = lookup(toleration.value, "effect", null)
+          }
+        }
+        container {
+          name    = "kubectl"
+          image   = "registry.k8s.io/kubectl:v1.32.4"
+          command = ["kubectl"]
+          args = [
+            "apply", "--server-side", "--force-conflicts",
+            "-f", "https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v${local.ngf_version}/deploy/crds.yaml"
+          ]
+        }
+      }
+    }
+  }
+  wait_for_completion = true
+  timeouts {
+    create = "5m"
+    update = "5m"
+  }
+  depends_on = [kubernetes_cluster_role_binding_v1.ngf_crd_upgrade]
+}
+
 # NGINX Gateway Fabric Helm Chart
 # Note: Gateway API CRDs are installed by the gateway_api_crd module (dependency)
 resource "helm_release" "nginx_gateway_fabric" {
   name             = local.helm_release_name
   wait             = lookup(var.instance.spec, "helm_wait", true)
-  chart            = "${path.module}/charts/nginx-gateway-fabric-2.4.1.tgz"
+  chart            = "${path.module}/charts/nginx-gateway-fabric-${local.ngf_version}.tgz"
   namespace        = var.environment.namespace
   max_history      = 10
   skip_crds        = false
@@ -1152,9 +1240,12 @@ resource "helm_release" "nginx_gateway_fabric" {
         # Labels for control plane deployment
         labels = local.common_labels
 
+        # Upstream image: the two fixes the facetscloud fork carried (regex location
+        # ordering, nginx/nginx-gateway-fabric#4764; stale upstream IPs after agent
+        # reconnect, #5330 via #5444 + agent v3.12.x) are upstream in 2.9.0.
         image = {
-          repository = "facetscloud/nginx-gateway-fabric"
-          tag        = "v2.4.1"
+          repository = "ghcr.io/nginx/nginx-gateway-fabric"
+          tag        = local.ngf_version
           pullPolicy = "IfNotPresent"
         }
         imagePullSecrets = lookup(var.inputs, "artifactories", null) != null ? var.inputs.artifactories.attributes.registry_secrets_list : []
@@ -1365,7 +1456,8 @@ resource "helm_release" "nginx_gateway_fabric" {
 
   depends_on = [
     kubernetes_secret_v1.bootstrap_tls,
-    kubernetes_secret_v1.bootstrap_tls_additional
+    kubernetes_secret_v1.bootstrap_tls_additional,
+    kubernetes_job_v1.ngf_crd_upgrade
   ]
 }
 
@@ -1414,7 +1506,7 @@ module "gateway_api_resources_http_routes" {
 }
 
 # Basic Authentication using NGF AuthenticationFilter CRD
-# NGF 2.4.1 supports native basic auth via AuthenticationFilter (gateway.nginx.org/v1alpha1)
+# NGF 2.x supports native basic auth via AuthenticationFilter (gateway.nginx.org/v1alpha1)
 # When basic_auth is enabled: auto-generates credentials, creates htpasswd Secret,
 # and applies AuthenticationFilter to all HTTPRoute rules (per-rule disable_auth to exempt)
 
@@ -1428,7 +1520,7 @@ resource "kubernetes_secret_v1" "basic_auth" {
   count = lookup(var.instance.spec, "basic_auth", false) ? 1 : 0
 
   metadata {
-    name      = "${local.name}-basic-auth"
+    name      = local.basic_auth_secret_name
     namespace = var.environment.namespace
   }
 
@@ -1436,7 +1528,11 @@ resource "kubernetes_secret_v1" "basic_auth" {
     auth = "${var.instance_name}user:${bcrypt(random_string.basic_auth_password[0].result)}"
   }
 
-  type = "nginx.org/htpasswd"
+  # NGF 2.8.0 removed support for the nginx.org/htpasswd Secret type in
+  # AuthenticationFilter; Opaque with the `auth` key is the supported form.
+  # Secret type is immutable, so the Secret is replaced under a new name
+  # (create_before_destroy cannot reuse the old name).
+  type = "Opaque"
 
   lifecycle {
     ignore_changes        = [data]
