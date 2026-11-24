@@ -92,6 +92,84 @@ locals {
     k => v
     if !(contains(local.exclude_env_and_secret_values, v))
   }
+  # Keep resolved environment values out of Helm release history and metadata.
+  effective_env = merge(
+    lookup(var.environment, "global_variables", {}),
+    local.filtered_env_vars,
+    local.build_id_env,
+    local.filtered_all_secrets,
+    length(local.deployment_id) > 0 ? { deployment_id = local.deployment_id } : {}
+  )
+  allow_dots_in_env = lookup(local.advanced_config_values, "allow_dots_in_env", false)
+  secret_env = {
+    for k, v in local.effective_env :
+    (!local.allow_dots_in_env && strcontains(k, ".") ? upper(replace(k, ".", "_")) : k) => tostring(v)
+  }
+  safe_sidecars = {
+    for name, container in local.sidecars : name => merge(container, {
+      env = {}
+      additional_k8s_env = concat(
+        [for key in keys(lookup(container, "env", {})) : {
+          name      = key
+          valueFrom = { secretKeyRef = { name = "${var.chart_name}-env-${substr(sha256("sidecar/${name}"), 0, 10)}", key = key } }
+        }],
+        lookup(container, "additional_k8s_env", [])
+      )
+    })
+  }
+  safe_init_containers = {
+    for name, container in local.init_containers : name => merge(container, {
+      env = {}
+      additional_k8s_env = concat(
+        [for key in keys(lookup(container, "env", {})) : {
+          name      = key
+          valueFrom = { secretKeyRef = { name = "${var.chart_name}-env-${substr(sha256("init/${name}"), 0, 10)}", key = key } }
+        }],
+        lookup(container, "additional_k8s_env", [])
+      )
+    })
+  }
+  safe_advanced_values = merge(local.advanced_config_values, {
+    sidecars        = local.safe_sidecars
+    init_containers = local.safe_init_containers
+  })
+  helm_values = merge(var.values, {
+    spec = merge(var.values.spec, { env = {}, sidecars = local.safe_sidecars, init_containers = local.safe_init_containers })
+    advanced = merge(lookup(var.values, "advanced", {}), {
+      common = merge(local.common_advanced, {
+        app_chart = merge(local.advanced_config, { values = local.safe_advanced_values })
+      })
+    })
+  })
+}
+
+resource "kubernetes_secret_v1" "app_env" {
+  metadata {
+    name      = "${var.chart_name}-env"
+    namespace = var.namespace
+  }
+  data = sensitive(local.secret_env)
+  type = "Opaque"
+}
+
+resource "kubernetes_secret_v1" "sidecar_env" {
+  for_each = local.sidecars
+  metadata {
+    name      = "${var.chart_name}-env-${substr(sha256("sidecar/${each.key}"), 0, 10)}"
+    namespace = var.namespace
+  }
+  data = sensitive(lookup(each.value, "env", {}))
+  type = "Opaque"
+}
+
+resource "kubernetes_secret_v1" "init_env" {
+  for_each = local.init_containers
+  metadata {
+    name      = "${var.chart_name}-env-${substr(sha256("init/${each.key}"), 0, 10)}"
+    namespace = var.namespace
+  }
+  data = sensitive(lookup(each.value, "env", {}))
+  type = "Opaque"
 }
 
 resource "helm_release" "app-chart" {
@@ -108,12 +186,12 @@ resource "helm_release" "app-chart" {
   max_history      = 10
   cleanup_on_fail  = lookup(local.advanced_config, "cleanup_on_fail", true)
   values = [
-    yamlencode(var.values),
+    yamlencode(local.helm_values),
     yamlencode({
       metadata = {
         name        = var.chart_name
-        annotations = merge(var.annotations, { buildId = local.build_id })
-        labels = var.labels
+        annotations = merge(var.annotations, { buildId = local.build_id, "facets.cloud/env-secret-resource-version" = jsonencode(concat([kubernetes_secret_v1.app_env.metadata[0].resource_version], [for secret in kubernetes_secret_v1.sidecar_env : secret.metadata[0].resource_version], [for secret in kubernetes_secret_v1.init_env : secret.metadata[0].resource_version])) })
+        labels      = var.labels
       }
       spec = {
         release = {
@@ -128,17 +206,6 @@ resource "helm_release" "app-chart" {
       }
     }),
     yamlencode({
-      spec = {
-        env = merge(
-          lookup(var.environment, "global_variables", {}),
-          local.filtered_env_vars,
-          local.build_id_env,
-          local.filtered_all_secrets,
-          length(local.deployment_id) > 0 ? { deployment_id = local.deployment_id } : {}
-        )
-      }
-    }),
-    yamlencode({
       advanced = {
         common = {
           app_chart = {
@@ -146,8 +213,12 @@ resource "helm_release" "app-chart" {
               tolerations      = local.all_tolerations
               node_selector    = local.node_selector
               pod_distribution = local.pod_distribution
-              init_containers  = local.init_containers
-              sidecars         = local.sidecars
+              init_containers  = local.safe_init_containers
+              sidecars         = local.safe_sidecars
+              additional_k8s_env_from = concat(
+                lookup(local.advanced_config_values, "additional_k8s_env_from", []),
+                [{ secretRef = { name = kubernetes_secret_v1.app_env.metadata[0].name } }]
+              )
             }
           }
         }
